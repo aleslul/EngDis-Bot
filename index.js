@@ -7,16 +7,20 @@ const prompt = PromptSync({ sigint: true });
 
 class Main {
   engdis = new EngDis();
+  isToeic = false; // Bandera de estado para saber en qué modo estamos
 
   constructor() {
     this.welcome();
   }
 
   async main() {
-    // --- CONFIGURACIÓN PARA LA USS ---
-    // RECUERDA: Obtén un nuevo token si el bot dice "Error en el flujo principal"
     const miTokenUSS = process.env.USS_TOKEN; 
     const baseUrlUSS = "https://edwebservices.engdis.com/api/";
+
+    if (!miTokenUSS) {
+      console.log("[!] Error crítico: USS_TOKEN no encontrado en el archivo .env");
+      return;
+    }
 
     console.log("[*] Conectando con la sesión del token...");
     this.engdis = new EngDis(baseUrlUSS, miTokenUSS);
@@ -25,37 +29,61 @@ class Main {
       let courses = await this.selectCourse();
       if (courses.length > 0) {
         await this.setTaskSuccess(courses);
-        const progress = await this.engdis.getProgress();
+        
+        // El progreso final lo sacamos según el modo
+        const progress = this.isToeic ? ["(Calculado en portal)", "N/A"] : await this.engdis.getProgress();
+        
         console.log("\n========================================");
         console.log("[#] PROCESO COMPLETADO CON ÉXITO");
-        console.log(`[#] Progreso final: ${progress[0]}% | Nota: ${progress[1]}`);
+        console.log(`[#] Progreso final: ${progress[0]}%`);
         console.log("========================================\n");
       }
     } catch (error) {
       console.log("\n[!] Error en el flujo principal. Verifica tu Token.");
+      // console.log(error); // Descomenta para debugguear si falla
     }
   }
 
   async welcome() {
     console.log(figlet.textSync("EngDis BOT"));
-    console.log("[!] Last update: 28/03/2026\n");
+    console.log("[!] Last update: 28/03/2026 - Multicurso\n");
   }
 
   async selectCourse() {
-    const res = await this.engdis.getGetDefaultCourseProgress();
-    if (!res.isSuccess) throw new Error("Token expirado");
+    console.log("--- SELECCIÓN DE CURSO ---");
+    console.log("[1] Basic 3 (General English)");
+    console.log("[2] TOEIC Official Learning 2");
+    
+    const op = await prompt("[?] Opción: ");
 
-    const all = (await prompt("[?] ¿Completar todos los cursos? (y/n): ")) === "y";
-    return all ? res.data.map(i => ({ NodeId: i.NodeId, ParentNodeId: i.ParentNodeId })) : [];
+    if (op === "2") {
+      this.isToeic = true;
+      const res = await this.engdis.getSpecificCourseProgress(1547470);
+      if (!res.isSuccess) throw new Error("Error obteniendo datos del TOEIC");
+
+      const all = (await prompt("[?] ¿Completar lecciones del TOEIC (Sin Tests)? (y/n): ")) === "y";
+      return all ? res.data.map(i => ({ NodeId: i.NodeId, ParentNodeId: i.ParentNodeId, Name: i.Name })) : [];
+    } else {
+      this.isToeic = false;
+      const res = await this.engdis.getGetDefaultCourseProgress();
+      if (!res.isSuccess) throw new Error("Token expirado");
+
+      const all = (await prompt("[?] ¿Completar todo el Basic 3 (Con Tests)? (y/n): ")) === "y";
+      return all ? res.data.map(i => ({ NodeId: i.NodeId, ParentNodeId: i.ParentNodeId, Name: i.Name })) : [];
+    }
   }
 
   async setTaskSuccess(courses) {
     for (const course of courses) {
+      console.log(`\n========================================`);
+      console.log(`🚀 PROCESANDO UNIDAD: ${course.Name || course.NodeId}`);
+      console.log(`========================================`);
+
       const tree = await this.engdis.getCourseTree(course.NodeId, course.ParentNodeId);
       if (!tree.isSuccess) continue;
 
       for (const unit of tree.data) {
-        console.log(`\n[*] Unidad: ${unit.Name}`);
+        console.log(`\n[*] Lección: ${unit.Name}`);
         
         for (const section of unit.Children) {
           if (section.Name !== "Test") {
@@ -64,9 +92,13 @@ class Main {
               await this.engdis.setSucessTask(course.ParentNodeId, task.NodeId);
             }
           } else {
-            console.log(`  [!] Iniciando Oráculo de IA para el Test...`);
-            // Enviamos el código, el ID de la sección y el ID del padre (Unit)
-            await this.setTestAI(unit["Metadata"]["Code"], section.NodeId, unit.ParentNodeId);
+            // Lógica condicional según el curso
+            if (this.isToeic) {
+              console.log(`  [!] Saltando Test de TOEIC por ahora...`);
+            } else {
+              console.log(`  [!] Iniciando Oráculo de IA para el Test...`);
+              await this.setTestAI(unit["Metadata"]["Code"], section.NodeId, unit.ParentNodeId);
+            }
           }
         }
       }
@@ -75,11 +107,9 @@ class Main {
 
   async setTestAI(code, nodeId, parentNodeId) {
     try {
-      // 1. "Calentamos" la tarea para avisar al servidor que entramos al test
       await this.engdis.setSucessTask(parentNodeId, nodeId); 
       await new Promise(r => setTimeout(r, 1000));
 
-      // 2. Buscamos el JSON del Test usando el buscador dinámico del lib
       const res = await this.engdis.getTestItem(code, nodeId, parentNodeId);
       
       if (!res.isSuccess) {
@@ -91,7 +121,6 @@ class Main {
       const questions = item.q || item.questions || item.Questions;
       const submitAnswer = [];
 
-      // 3. Procesamos cada pregunta con la IA
       for (const q of questions) {
         const preguntaTexto = (q.t || q.d || "Audio/Video task").replace(/<[^>]*>?/gm, '').trim();
         
@@ -111,16 +140,14 @@ class Main {
           });
           console.log(`    [#] IA respondió ID: ${idCorrecto}`);
         } else {
-          // Fallback si la IA no responde
           submitAnswer.push({
             iId: item.id, iCode: item.c, iType: item.t || 1,
             ua: [{ qId: q.id, aId: [[q.al[0].id, options[0].id]] }]
           });
         }
-        await new Promise(r => setTimeout(r, 1500)); // Delay humano
+        await new Promise(r => setTimeout(r, 1500));
       }
 
-      // 4. Enviamos los resultados
       const status = await this.engdis.SaveUserTestV1(nodeId, parentNodeId, submitAnswer);
       console.log(`    [#] Resultado: ${status.data?.finalMark ? status.data.finalMark + "%" : "Enviado correctamente"}`);
       
