@@ -1,17 +1,11 @@
-import clipboardy from 'clipboardy';
+import 'dotenv/config';
 import figlet from "figlet";
 import PromptSync from "prompt-sync";
 import EngDis from "./lib/engdis.lib.js";
 
 const prompt = PromptSync({ sigint: true });
-const baseUrlFe1 = "https://edservices.engdis.com/api/";
-const baseUrlFe2 = "https://eduiwebservices20.engdis.com/api/";
+
 class Main {
-  setting = {
-    baseUrl: "",
-    username: "",
-    password: "",
-  };
   engdis = new EngDis();
 
   constructor() {
@@ -19,236 +13,124 @@ class Main {
   }
 
   async main() {
-    await this.getInput();
-    const loginToken = await this.login();
-    if (!loginToken) process.exit();
-    this.engdis = new EngDis(this.setting.baseUrl, loginToken.UserInfo.Token);
-    let courses = await this.selectCourse();
-    await this.setTaskSuccess(courses);
+    // --- CONFIGURACIÓN PARA LA USS ---
+    // RECUERDA: Obtén un nuevo token si el bot dice "Error en el flujo principal"
+    const miTokenUSS = process.env.USS_TOKEN; 
+    const baseUrlUSS = "https://edwebservices.engdis.com/api/";
 
-    const progress = await this.engdis.getProgress();
-    console.log("Progress:", progress[0], "Grade:", progress[1])
-
-    // await this.logout();
+    console.log("[*] Conectando con la sesión del token...");
+    this.engdis = new EngDis(baseUrlUSS, miTokenUSS);
+    
+    try {
+      let courses = await this.selectCourse();
+      if (courses.length > 0) {
+        await this.setTaskSuccess(courses);
+        const progress = await this.engdis.getProgress();
+        console.log("\n========================================");
+        console.log("[#] PROCESO COMPLETADO CON ÉXITO");
+        console.log(`[#] Progreso final: ${progress[0]}% | Nota: ${progress[1]}`);
+        console.log("========================================\n");
+      }
+    } catch (error) {
+      console.log("\n[!] Error en el flujo principal. Verifica tu Token.");
+    }
   }
 
   async welcome() {
-    console.log(figlet.textSync("English Discoveries."));
-    console.log(
-      "[!] Bot for student kmitl only!, latest update at 27/01/23.\n"
-    );
-  }
-
-  async logout() {
-    console.log("\n[*] waiting logout...");
-    await this.engdis.Logout();
-    console.log("[#] logout success, see u soon.");
-    // process.exit();
-  }
-
-  async getInput() {
-    this.setting.baseUrl =
-      (await prompt("[?] choose your subject ( fe1 or fe2 ) : ")) == "fe1"
-        ? baseUrlFe1
-        : baseUrlFe2;
-    this.setting.username = await prompt("[?] enter your studentID  : ");
-    this.setting.baseUrl = baseUrlFe2
-    // this.setting.username = "65050368"
-    this.setting.password = this.setting.username.slice(-5);
-    console.log();
-  }
-
-  async login() {
-    const engdis = new EngDis(this.setting.baseUrl);
-    console.log("[*] waiting...");
-    let result = await engdis.Login(
-      this.setting.username,
-      this.setting.password
-    );
-    if (!result.UserInfo) {
-      console.log("[!] username or password is incorrect.");
-    } else if (!result.UserInfo.Token) {
-      console.log(
-        "[!] please logout from website before use bot and try again."
-      );
-    } else {
-      console.log(`[#] login with success.\n`);
-      return result;
-    }
-    return;
+    console.log(figlet.textSync("EngDis BOT"));
+    console.log("[!] Last update: 28/03/2026\n");
   }
 
   async selectCourse() {
-    let courseProgressListTable = [];
-    let courseTmp = [];
-    const selectAllCourse = (await prompt("[?] select all course (y/n) : ")) == "y" ? true : false;
-    // const selectAllCourse = false
+    const res = await this.engdis.getGetDefaultCourseProgress();
+    if (!res.isSuccess) throw new Error("Token expirado");
 
-    console.log();
-    var courseProgressList = await this.engdis.getGetDefaultCourseProgress();
-    if (!courseProgressList.isSuccess) {
-      console.log("[!] token die, please login again.");
-      process.exit();
-    }
-
-    courseProgressList.data.map((item) => {
-      if (selectAllCourse) {
-        console.log(`[#] you choose course ( ${item.Name} )`);
-        courseTmp.push({
-          NodeId: item.NodeId,
-          ParentNodeId: item.ParentNodeId,
-        });
-      } else {
-        courseProgressListTable.push({
-          Id: item.NodeId,
-          Name: item.Name,
-        });
-      }
-    });
-
-    if (selectAllCourse) return courseTmp;
-
-    console.table(courseProgressListTable);
-    const selectId = await prompt("[?] select id or index : ");
-    // const selectId = 8;
-
-    var find = courseProgressList.data.find(
-      (ele, index) => ele.NodeId == selectId || index == selectId
-    );
-
-    if (!find) {
-      console.log("[!] can't find id or index", selectId);
-      return [];
-    }
-
-    // console.log(`[#] you choose course ( ${find.Name} )`);
-    courseTmp.push({
-      NodeId: find.NodeId,
-      ParentNodeId: find.ParentNodeId,
-    });
-    return courseTmp;
+    const all = (await prompt("[?] ¿Completar todos los cursos? (y/n): ")) === "y";
+    return all ? res.data.map(i => ({ NodeId: i.NodeId, ParentNodeId: i.ParentNodeId })) : [];
   }
 
   async setTaskSuccess(courses) {
-    for (let course of courses) {
-      var courseTree = await this.engdis.getCourseTree(
-        course.NodeId,
-        course.ParentNodeId
-      );
-      
-      await courseTree.data.map(async (item) => {
-        console.log(`\n[*] checking ( ${item.Name} )`);
+    for (const course of courses) {
+      const tree = await this.engdis.getCourseTree(course.NodeId, course.ParentNodeId);
+      if (!tree.isSuccess) continue;
 
-        await item.Children.map(async (elem) => {
-          if (elem.Name != "Test") {
-            console.log(`[#] checking ${elem.Name}`);
-
-            elem.Children.map(async (ele) => {
-              await this.engdis.setSucessTask(
-                course.ParentNodeId,
-                ele.NodeId
-              );
-            });
+      for (const unit of tree.data) {
+        console.log(`\n[*] Unidad: ${unit.Name}`);
+        
+        for (const section of unit.Children) {
+          if (section.Name !== "Test") {
+            console.log(`  [>] Completando: ${section.Name}`);
+            for (const task of section.Children) {
+              await this.engdis.setSucessTask(course.ParentNodeId, task.NodeId);
+            }
           } else {
-            console.log(`[#] checking ${elem.Name}`)
-            await this.setTest100Percent(item["Metadata"]["Code"], item["NodeId"], item["ParentNodeId"])
+            console.log(`  [!] Iniciando Oráculo de IA para el Test...`);
+            // Enviamos el código, el ID de la sección y el ID del padre (Unit)
+            await this.setTestAI(unit["Metadata"]["Code"], section.NodeId, unit.ParentNodeId);
           }
-        });
-      });
-
-      // for (const item of courseTree["data"]) {
-      //   console.log(`\n[*] checking ( ${item.Name} )`);
-
-      //   for (const elem of item["Children"]) {
-      //     if (elem.Name != "Test") {
-      //       console.log(`[#] checking ${elem.Name}`);
-
-      //       for (const ele of elem["Children"]) {
-      //         await this.engdis.setSucessTask(
-      //           course.ParentNodeId,
-      //           ele.NodeId
-      //         );
-      //       }
-      //     } else {
-      //       console.log(`[#] checking ${elem.Name}`)
-      //       await this.setTest100Percent(item["Metadata"]["Code"], item["NodeId"], item["ParentNodeId"])
-      //     }
-      //   }
-      // }
-
+        }
+      }
     }
   }
 
-  async setTest100Percent(code, nodeId, parentNodeId) {
-    const testData = await this.engdis.getTestCodeDigit(code)
-    var submitAnswer = [];
+  async setTestAI(code, nodeId, parentNodeId) {
+    try {
+      // 1. "Calentamos" la tarea para avisar al servidor que entramos al test
+      await this.engdis.setSucessTask(parentNodeId, nodeId); 
+      await new Promise(r => setTimeout(r, 1000));
 
-    for (var data of testData["tasks"]) {
-      const id = data["id"]
-      const code = data["code"]
-      const type = data["type"]
-      const testAnswerData = await this.engdis.practiceGetItem(code)
-
-      if (testAnswerData["data"]["i"]["q"].length > 1) {
-        for (var i = 1; i < testAnswerData["data"]["i"]["q"].length; i++) {
-          testAnswerData["data"]["i"]["q"][0]["al"] = testAnswerData["data"]["i"]["q"][0]["al"].concat(testAnswerData["data"]["i"]["q"][i]["al"])
-        }
+      // 2. Buscamos el JSON del Test usando el buscador dinámico del lib
+      const res = await this.engdis.getTestItem(code, nodeId, parentNodeId);
+      
+      if (!res.isSuccess) {
+        console.log("    [!] Error: El servidor no soltó el JSON. ¿Tienes el test abierto en Chrome?");
+        return;
       }
 
-      const correctAnswerList = testAnswerData["data"]["i"]["q"][0]["al"]
+      const item = res.data.i || res.data.item || res.data;
+      const questions = item.q || item.questions || item.Questions;
+      const submitAnswer = [];
 
-      if (correctAnswerList.length == 0) continue
-      const foundC = correctAnswerList[0]["a"].filter(item => item["c"] == "1")
-
-      if (foundC.length != 0) {
-        const answerUa = correctAnswerList.map(obj => [obj.id, obj.a.find(answer => answer.c === '1').id]);
+      // 3. Procesamos cada pregunta con la IA
+      for (const q of questions) {
+        const preguntaTexto = (q.t || q.d || "Audio/Video task").replace(/<[^>]*>?/gm, '').trim();
         
-        submitAnswer.push({
-          "iId"	:	id,
-          "iCode"	:	code,
-          "iType"	: type,
-          "ua": [
-            {
-                "qId": 1,
-                "aId": answerUa
-            }
-          ]
-        })
-      } else {
-        var uaList = [];
+        const options = q.al[0].a.map(opt => ({
+          id: opt.id,
+          text: opt.t.replace(/<[^>]*>?/gm, '').trim()
+        }));
 
-        for (const ans of correctAnswerList) {
-          uaList.push(              {
-            "qId": "1",
-            "aId": [
-                [
-                    ans["id"],
-                    ans["a"][0]["id"]
-                ]
-            ]
-          })
+        const idCorrecto = await this.engdis.consultarIA(preguntaTexto, options);
+        
+        if (idCorrecto) {
+          submitAnswer.push({
+            iId: item.id,
+            iCode: item.c,
+            iType: item.t || 1,
+            ua: [{ qId: q.id, aId: [[q.al[0].id, idCorrecto.trim()]] }]
+          });
+          console.log(`    [#] IA respondió ID: ${idCorrecto}`);
+        } else {
+          // Fallback si la IA no responde
+          submitAnswer.push({
+            iId: item.id, iCode: item.c, iType: item.t || 1,
+            ua: [{ qId: q.id, aId: [[q.al[0].id, options[0].id]] }]
+          });
         }
-
-        submitAnswer.push({
-          "iId": id,
-          "iCode": code,
-          "iType": type,
-          "ua": uaList
-        })
+        await new Promise(r => setTimeout(r, 1500)); // Delay humano
       }
-    }
 
-    const testStatus = await this.engdis.SaveUserTestV1(nodeId, parentNodeId, submitAnswer)
-    console.log(testStatus["data"]["finalMark"])
-
-    if (testStatus["data"]["finalMark"] != "100") {
-      clipboardy.writeSync(JSON.stringify(submitAnswer))
-      console.log(testStatus["data"]["finalMark"])
+      // 4. Enviamos los resultados
+      const status = await this.engdis.SaveUserTestV1(nodeId, parentNodeId, submitAnswer);
+      console.log(`    [#] Resultado: ${status.data?.finalMark ? status.data.finalMark + "%" : "Enviado correctamente"}`);
+      
+    } catch (e) {
+      console.log("    [!] Error crítico procesando el Test.");
     }
   }
 }
 
 (async () => {
-  const mainClass = new Main();
-  mainClass.main();
+  const main = new Main();
+  main.main();
 })();

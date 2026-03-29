@@ -1,27 +1,22 @@
 # Auto EngDis
-Unofficial Bot EngDis API.
+A bot for English Discoveries App
 
-บอทสำหรับชาววัยรุ่น KMITL สำหรับวิชา FE1 และ FE2 ค้าบ
+ATENTION: This bot do not resolves test (By now)
 
-## How to use ?
-โคลนโปรเจคนี้ไปเลยยค้าบวัยรุ่นนนนน
+## How to use 
+Clon this repo in your pc
 
 ``` git clone https://github.com/BossNz/auto-engdis ```
 
-แล้วก็ลง package ทั้งหมดก่อน
-โดยใช้คำสั่ง
+Open a terminal and run:
 
 ``` npm install ```
 
-หลังจากลง package เสร็จแล้วสามารถใช้งานได้โดยใช้คำสั่ง
+For use, open the directory on a code editor and create a .env, use the .env.example as example and then, run:
 
 ```js
 node .
 ```
 
-สามารถใช้งานได้แล้ววววววว !!!
-
 ## WARNING
 This project may be used only for **Educational Purposes**. Developers assume **no liability and are not responsible for any misuse or damage** caused by this program.
-
-ไม่แนะนำให้นำไปใช้โดย**เด็ดขาด** ใช้เพื่อการศึกษา**เท่านั้น**
