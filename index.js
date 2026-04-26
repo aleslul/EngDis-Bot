@@ -90,7 +90,7 @@ async setTaskSuccess(courses) {
       const courseId = course.ParentNodeId; 
 
       for (const unit of tree.data) {
-        // OPTIMIZACIÓN 1: Si toda la unidad está al 100%, la saltamos completa
+        // OPTIMIZACIÓN: Saltar unidad terminada
         if (unit.IsDone || unit.Progress === 1.0 || unit.Progress === 100) {
           console.log(`\n[✔] Unidad: ${unit.Name} -> COMPLETADA (Saltando...)`);
           continue;
@@ -102,7 +102,6 @@ async setTaskSuccess(courses) {
         let transcript = "";
         let contextText = "";
         
-        // Solo descargamos teoría/transcripciones si la unidad NO está terminada
         if (lessonCode) {
           if (this.isToeic) {
             transcript = await this.engdis.getTranscript(lessonCode);
@@ -114,7 +113,6 @@ async setTaskSuccess(courses) {
         }
         
         for (const section of unit.Children) {
-          // OPTIMIZACIÓN 2: Si la lección/sección ya está terminada, la saltamos
           if (section.IsDone || section.Progress === 1.0 || section.Progress === 100) {
             console.log(`  [✔] ${section.Name} -> Listo`);
             continue;
@@ -123,7 +121,6 @@ async setTaskSuccess(courses) {
           if (section.Name !== "Test") {
             console.log(`  [>] Completando: ${section.Name}`);
             for (const task of section.Children) {
-              // OPTIMIZACIÓN 3: Saltamos tareas individuales (Explore, Practice) ya hechas
               if (task.IsDone || task.Progress === 1.0) continue;
               await this.engdis.setSucessTask(courseId, task.NodeId);
             }
@@ -131,23 +128,26 @@ async setTaskSuccess(courses) {
             console.log(`  [!] Iniciando Oráculo para el Test...`);
             if (!lessonCode) continue;
 
-            if (this.isToeic) {
-              let partCounter = 1;
-              for (const task of section.Children) {
-                // OPTIMIZACIÓN 4: Saltamos partes específicas del test ya aprobadas
-                if (task.IsDone || task.Progress === 1.0) {
-                  console.log(`    [✔] Parte t0${partCounter} ya aprobada.`);
-                  partCounter++;
-                  continue;
-                }
+            // ITERACIÓN UNIVERSAL: Ahora Basic 3 y TOEIC usan el mismo sistema de sub-tareas
+            let partCounter = 1;
+            // Si no hay sub-tareas, creamos un arreglo falso para que al menos corra 1 vez
+            const testTasks = section.Children && section.Children.length > 0 ? section.Children : [{ NodeId: section.NodeId, Metadata: { Code: lessonCode } }];
 
-                const taskCode = task.Metadata?.Code ? task.Metadata.Code : `${lessonCode}t0${partCounter}`;
-                await this.setToeicTestAI(taskCode, task.NodeId, courseId, transcript);
+            for (const task of testTasks) {
+              if (task.IsDone || task.Progress === 1.0) {
+                console.log(`    [✔] Parte ${partCounter} ya aprobada.`);
                 partCounter++;
+                continue;
               }
-            } else {
-              // LÓGICA BASIC 3 (Un solo bloque)
-              await this.setBasicTestAI(lessonCode, section.NodeId, courseId, contextText);
+
+              const taskCode = task.Metadata?.Code ? task.Metadata.Code : lessonCode;
+
+              if (this.isToeic) {
+                await this.setToeicTestAI(taskCode, task.NodeId, courseId, transcript, partCounter);
+              } else {
+                await this.setBasicTestAI(taskCode, task.NodeId, courseId, contextText, partCounter);
+              }
+              partCounter++;
             }
           }
         }
@@ -158,14 +158,14 @@ async setTaskSuccess(courses) {
   // ==========================================
   //      RESOLUTOR PARA BASIC 3 (ESTÁNDAR)
   // ==========================================
-  async setBasicTestAI(code, nodeId, courseId, contextText) {
+  async setBasicTestAI(code, nodeId, courseId, contextText, partCounter) {
     try {
       await this.engdis.setSucessTask(courseId, nodeId); 
       await new Promise(r => setTimeout(r, 1000));
 
-      const res = await this.engdis.getTestItem(code, nodeId, courseId);
-      // ESTE ES EL NUEVO CONSOLE LOG PARA CHISMEAR ERRORES 404
-      if (!res.isSuccess) return console.log(`    [!] Error: La USS no devolvió el test para ${code}`);
+      // Pasamos el partCounter para que la librería sepa si probar t101, t102, etc.
+      const res = await this.engdis.getTestItem(code, nodeId, courseId, partCounter);
+      if (!res.isSuccess) return console.log(`    [!] Error: La USS no devolvió el test para ${code} (Parte ${partCounter})`);
 
       const item = res.data.i || res.data.item || res.data;
       const questions = item.q || item.questions;
@@ -201,14 +201,13 @@ async setTaskSuccess(courses) {
   // ==========================================
   //      RESOLUTOR PARA TOEIC (AVANZADO)
   // ==========================================
-  async setToeicTestAI(code, nodeId, courseId, transcript) {
+  async setToeicTestAI(code, nodeId, courseId, transcript, partCounter) {
     try {
       await this.engdis.setSucessTask(courseId, nodeId); 
       await new Promise(r => setTimeout(r, 1000));
 
-      const res = await this.engdis.getTestItem(code, nodeId, courseId);
-      // ESTE ES EL NUEVO CONSOLE LOG PARA CHISMEAR ERRORES 404
-      if (!res.isSuccess) return console.log(`    [!] Error: La USS no devolvió el test para ${code}`);
+      const res = await this.engdis.getTestItem(code, nodeId, courseId, partCounter);
+      if (!res.isSuccess) return console.log(`    [!] Error: La USS no devolvió el test para ${code} (Parte ${partCounter})`);
 
       const item = res.data.i || res.data.item || res.data;
       const questions = item.q || item.questions;
