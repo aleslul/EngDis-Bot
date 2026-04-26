@@ -44,76 +44,110 @@ class Main {
 
   async welcome() {
     console.log(figlet.textSync("EngDis BOT"));
-    console.log("[!] TOEIC God-Mode activado (Transcript Injection & Loop Patch)\n");
+    console.log("[!] Dual God-Mode & Anti-RateLimit Patch\n");
   }
 
   async selectCourse() {
     console.log("--- SELECCIÓN DE CURSO ---");
-    console.log("[1] Basic 3 (General English)");
-    console.log("[2] TOEIC Official Learning 2");
+    console.log("[1] Forzar Basic 3 (ID: 44205)");
+    console.log("[2] Forzar TOEIC Official Learning 2 (ID: 1547470)");
     
     const op = await prompt("[?] Opción: ");
 
-    if (op === "2") {
-      this.isToeic = true;
-      const res = await this.engdis.getSpecificCourseProgress(1547470);
-      if (!res.isSuccess) throw new Error("Error obteniendo datos del TOEIC");
-
-      const all = (await prompt("[?] ¿Completar todo el TOEIC (Tests incluidos)? (y/n): ")) === "y";
-      return all ? res.data.map(i => ({ NodeId: i.NodeId, ParentNodeId: i.ParentNodeId, Name: i.Name })) : [];
-    } else {
+    if (op === "1") {
       this.isToeic = false;
-      const res = await this.engdis.getGetDefaultCourseProgress();
-      if (!res.isSuccess) throw new Error("Token expirado");
+      // Exigimos a la USS que nos dé el Basic 3
+      const res = await this.engdis.getSpecificCourseProgress(44205);
+      if (!res.isSuccess) throw new Error("Error obteniendo datos del Basic 3. Token expirado.");
 
       const all = (await prompt("[?] ¿Completar todo el Basic 3? (y/n): ")) === "y";
       return all ? res.data.map(i => ({ NodeId: i.NodeId, ParentNodeId: i.ParentNodeId, Name: i.Name })) : [];
+      
+    } else if (op === "2") {
+      this.isToeic = true;
+      // Exigimos a la USS que nos dé el TOEIC
+      const res = await this.engdis.getSpecificCourseProgress(1547470);
+      if (!res.isSuccess) throw new Error("Error obteniendo datos del TOEIC. Token expirado.");
+
+      const all = (await prompt("[?] ¿Completar todo el TOEIC (Tests incluidos)? (y/n): ")) === "y";
+      return all ? res.data.map(i => ({ NodeId: i.NodeId, ParentNodeId: i.ParentNodeId, Name: i.Name })) : [];
+      
+    } else {
+      console.log("[!] Opción no válida.");
+      return [];
     }
   }
 
-  async setTaskSuccess(courses) {
+async setTaskSuccess(courses) {
     for (const course of courses) {
       console.log(`\n========================================`);
-      console.log(`🚀 PROCESANDO UNIDAD: ${course.Name || course.NodeId}`);
+      console.log(`🚀 PROCESANDO CURSO: ${course.Name || course.NodeId}`);
       console.log(`========================================`);
 
       const tree = await this.engdis.getCourseTree(course.NodeId, course.ParentNodeId);
       if (!tree.isSuccess) continue;
 
-      const courseId = course.ParentNodeId; // ID principal de todo el curso (vital para guardar el progreso)
+      const courseId = course.ParentNodeId; 
 
       for (const unit of tree.data) {
+        // OPTIMIZACIÓN 1: Si toda la unidad está al 100%, la saltamos completa
+        if (unit.IsDone || unit.Progress === 1.0 || unit.Progress === 100) {
+          console.log(`\n[✔] Unidad: ${unit.Name} -> COMPLETADA (Saltando...)`);
+          continue;
+        }
+
         console.log(`\n[*] Lección: ${unit.Name}`);
         
-        // Obtenemos el código base y la transcripción UNA SOLA VEZ por lección
         const lessonCode = unit["Metadata"] ? unit["Metadata"]["Code"] : null;
         let transcript = "";
+        let contextText = "";
         
-        if (this.isToeic && lessonCode) {
-          transcript = await this.engdis.getTranscript(lessonCode);
-          if (transcript) console.log(`    [#] Transcripción interceptada para toda la lección.`);
+        // Solo descargamos teoría/transcripciones si la unidad NO está terminada
+        if (lessonCode) {
+          if (this.isToeic) {
+            transcript = await this.engdis.getTranscript(lessonCode);
+            if (transcript) console.log(`    [#] Transcripción TOEIC lista.`);
+          } else {
+            contextText = await this.engdis.getBasicContext(lessonCode);
+            if (contextText) console.log(`    [#] Teoría Basic 3 inyectada al Oráculo.`);
+          }
         }
         
         for (const section of unit.Children) {
+          // OPTIMIZACIÓN 2: Si la lección/sección ya está terminada, la saltamos
+          if (section.IsDone || section.Progress === 1.0 || section.Progress === 100) {
+            console.log(`  [✔] ${section.Name} -> Listo`);
+            continue;
+          }
+
           if (section.Name !== "Test") {
             console.log(`  [>] Completando: ${section.Name}`);
             for (const task of section.Children) {
+              // OPTIMIZACIÓN 3: Saltamos tareas individuales (Explore, Practice) ya hechas
+              if (task.IsDone || task.Progress === 1.0) continue;
               await this.engdis.setSucessTask(courseId, task.NodeId);
             }
           } else {
-            console.log(`  [!] Iniciando Oráculo para el Test (Múltiples Partes)...`);
+            console.log(`  [!] Iniciando Oráculo para el Test...`);
             if (!lessonCode) continue;
 
-            // EL ARREGLO CRÍTICO: Iteramos por las sub-tareas del Test (t01, t02, t03...)
-            for (const task of section.Children) {
-              // Obtenemos el código exacto de la tarea (ej. i3lbaht01)
-              const taskCode = task.Metadata?.Code ? task.Metadata.Code : lessonCode;
-              
-              if (this.isToeic) {
+            if (this.isToeic) {
+              let partCounter = 1;
+              for (const task of section.Children) {
+                // OPTIMIZACIÓN 4: Saltamos partes específicas del test ya aprobadas
+                if (task.IsDone || task.Progress === 1.0) {
+                  console.log(`    [✔] Parte t0${partCounter} ya aprobada.`);
+                  partCounter++;
+                  continue;
+                }
+
+                const taskCode = task.Metadata?.Code ? task.Metadata.Code : `${lessonCode}t0${partCounter}`;
                 await this.setToeicTestAI(taskCode, task.NodeId, courseId, transcript);
-              } else {
-                await this.setBasicTestAI(taskCode, task.NodeId, courseId);
+                partCounter++;
               }
+            } else {
+              // LÓGICA BASIC 3 (Un solo bloque)
+              await this.setBasicTestAI(lessonCode, section.NodeId, courseId, contextText);
             }
           }
         }
@@ -124,36 +158,43 @@ class Main {
   // ==========================================
   //      RESOLUTOR PARA BASIC 3 (ESTÁNDAR)
   // ==========================================
-  async setBasicTestAI(code, nodeId, courseId) {
+  async setBasicTestAI(code, nodeId, courseId, contextText) {
     try {
       await this.engdis.setSucessTask(courseId, nodeId); 
       await new Promise(r => setTimeout(r, 1000));
 
       const res = await this.engdis.getTestItem(code, nodeId, courseId);
-      if (!res.isSuccess) return;
+      // ESTE ES EL NUEVO CONSOLE LOG PARA CHISMEAR ERRORES 404
+      if (!res.isSuccess) return console.log(`    [!] Error: La USS no devolvió el test para ${code}`);
 
       const item = res.data.i || res.data.item || res.data;
       const questions = item.q || item.questions;
       const submitAnswer = [];
 
       for (const q of questions) {
-        const rawQuestion = (typeof q.t === 'string' ? q.t : null) || q.d || "Context task";
+        const rawQuestion = q.qt || (typeof q.t === 'string' ? q.t : null) || q.d || "Context task";
         const preguntaTexto = rawQuestion.toString().replace(/<[^>]*>?/gm, '').trim();
         
-        const options = q.al[0].a.map(opt => ({
+        let rawOptions = [];
+        if (q.al) q.al.forEach(blank => { if (blank.a) rawOptions.push(...blank.a); });
+        if (item.d) rawOptions.push(...item.d); 
+        if (q.d) rawOptions.push(...q.d);       
+
+        const options = rawOptions.map(opt => ({
           id: opt.id,
-          text: (opt.t || "").toString().replace(/<[^>]*>?/gm, '').trim()
+          text: (opt.txt || opt.t || "").toString().replace(/<[^>]*>?/gm, '').trim()
         }));
 
-        const idCorrecto = await this.engdis.consultarIA(preguntaTexto, options);
+        const idCorrecto = await this.engdis.consultarIA(preguntaTexto, options, contextText);
         this.procesarRespuestaIA(idCorrecto, options, item, q, submitAnswer);
-        await new Promise(r => setTimeout(r, 1500));
+        
+        await new Promise(r => setTimeout(r, 4500));
       }
 
       const status = await this.engdis.SaveUserTestV1(nodeId, courseId, submitAnswer);
-      console.log(`    [#] Parte ${code} -> ${status.data?.finalMark ? status.data.finalMark + "%" : "Enviada"}`);
+      console.log(`    [#] Resultado Basic 3 -> ${status.data?.finalMark ? status.data.finalMark + "%" : "Enviada"}`);
     } catch (e) {
-      console.log(`    [!] Error en Parte ${code}:`, e.message);
+      console.log(`    [!] Error en Test Basic 3:`, e.message);
     }
   }
 
@@ -166,7 +207,8 @@ class Main {
       await new Promise(r => setTimeout(r, 1000));
 
       const res = await this.engdis.getTestItem(code, nodeId, courseId);
-      if (!res.isSuccess) return;
+      // ESTE ES EL NUEVO CONSOLE LOG PARA CHISMEAR ERRORES 404
+      if (!res.isSuccess) return console.log(`    [!] Error: La USS no devolvió el test para ${code}`);
 
       const item = res.data.i || res.data.item || res.data;
       const questions = item.q || item.questions;
@@ -184,7 +226,7 @@ class Main {
         const idCorrecto = await this.engdis.consultarIA(preguntaTexto, options, transcript);
         this.procesarRespuestaIA(idCorrecto, options, item, q, submitAnswer);
         
-        await new Promise(r => setTimeout(r, 1500));
+        await new Promise(r => setTimeout(r, 4500));
       }
 
       const status = await this.engdis.SaveUserTestV1(nodeId, courseId, submitAnswer);
@@ -198,23 +240,23 @@ class Main {
   //  FUNCION AUXILIAR (EL FILTRO DE IA)
   // ==========================================
   procesarRespuestaIA(idCorrecto, options, item, q, submitAnswer) {
-    let finalAnswerId = options[0].id; // Fallback por defecto si todo falla
+    let finalAnswerId = options.length > 0 ? options[0].id : 0; 
 
     if (idCorrecto) {
-      // Usamos Expresión Regular para buscar dígitos numéricos dentro de la respuesta
       const match = idCorrecto.match(/\d+/); 
       if (match) {
         const parsedId = parseInt(match[0], 10);
-        // Verificamos que el número que sacó exista realmente en las opciones
         if (options.some(o => o.id === parsedId)) {
           finalAnswerId = parsedId;
         }
       }
     }
 
+    const aIdArray = q.al ? q.al.map(blank => [blank.id, finalAnswerId]) : [];
+
     submitAnswer.push({
       iId: item.id, iCode: item.c, iType: item.t || 1,
-      ua: [{ qId: q.id, aId: [[q.al[0].id, finalAnswerId]] }]
+      ua: [{ qId: q.id, aId: aIdArray }]
     });
     
     console.log(`      [-] Pregunta procesada. ID elegido: ${finalAnswerId}`);
