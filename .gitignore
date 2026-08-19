@@ -2,3 +2,4 @@ node_modules
 .vscode
 .BossNzConfigX
 .env
+repomix-output.xml
