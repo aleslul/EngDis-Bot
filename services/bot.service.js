@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { ScraperUtil } from "../utils/scraper.util.js";
 
 export class BotService {
@@ -37,11 +38,17 @@ export class BotService {
                 continue;
             }
 
+            const lessonSessionId = crypto.randomUUID();
+            await this.uss.setTimeOnLesson(courseId, section.NodeId, lessonSessionId);
+
             if (section.Name !== "Test") {
                 console.log(`  [>] Completando: ${section.Name}`);
                 for (const task of section.Children) {
                 if (task.IsDone || task.Progress === 1.0) continue;
                 await this.uss.setSucessTask(courseId, task.NodeId);
+
+                await this.uss.sendPing(lessonSessionId);
+                await new Promise(r => setTimeout(r, 6000));
                 }
             } else {
                 console.log(`  [!] Iniciando Oráculo para el Test...`);
@@ -57,7 +64,7 @@ export class BotService {
                     continue;
                 }
                 const taskCode = task.Metadata?.Code ? task.Metadata.Code : lessonCode;
-                await this.resolveTest(taskCode, task.NodeId, courseId, contextText, partCounter);
+                await this.resolveTest(taskCode, task.NodeId, courseId, contextText, partCounter, lessonSessionId);
                 partCounter++;
                 }
             }
@@ -102,7 +109,9 @@ export class BotService {
             });
             
             console.log(`      [-] Pregunta procesada. ID elegido: ${finalAnswerId}`);
-            await new Promise(r => setTimeout(r, 4500));
+
+            await this.uss.sendPing(lessonSessionId);
+            await new Promise(r => setTimeout(r, 12000)); //TODO: Modificar segundos por pregunta para humanizar
         }
 
         const status = await this.uss.SaveUserTestV1(nodeId, courseId, submitAnswer);

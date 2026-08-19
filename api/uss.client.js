@@ -1,4 +1,5 @@
 import axios from "axios";
+import crypto from "crypto";
 
 export class UssClient {
     constructor(baseUrl, token) {
@@ -12,6 +13,38 @@ export class UssClient {
             'Authorization': `Bearer ${token?.trim()}`
         }
         });
+    }
+
+    getStudentId() {
+        try {
+            const token = this.api.defaults.headers['Authorization'].split(' ')[1];
+            const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+            return payload.nameid || payload.StudentId || payload.sub || "52322710087471";
+        } catch (e) {
+            return "52322710087471"; 
+        }
+    }
+
+    async setTimeOnLesson(courseId, lessonId, lessonSessionId) {
+        const payload = {
+            StudentId: this.getStudentId(),
+            LessonId: lessonId,
+            CourseId: courseId,
+            UserSessionId: crypto.randomUUID(),
+            TimeStamp: Date.now(),
+            TabId: crypto.randomUUID(),
+            LessonSessionId: lessonSessionId,
+            Status: "S"
+        };
+        try {
+            await this.api.post('Progress/SetTimeOnLesson/', payload);
+        } catch (e) { }
+    }
+
+    async sendPing(lessonSessionId) {
+        try {
+            await this.api.put(`Ping/Ping?lessonSessionId=${lessonSessionId}`);
+        } catch (e) { }
     }
 
     async getSpecificCourseProgress(courseId) {

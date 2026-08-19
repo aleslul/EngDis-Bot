@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="UTF-8">
+        <title>EngDis Bot - God Mode</title>
+        <style>
+            body { 
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+                background: #1e1e1e; 
+                color: #ffffff; 
+                padding: 30px; 
+                display: flex;
+                justify-content: center;
+            }
+            .container {
+                width: 100%;
+                max-width: 600px;
+                background: #2d2d2d;
+                padding: 25px;
+                border-radius: 10px;
+                box-shadow: 0 8px 20px rgba(0,0,0,0.6);
+            }
+            h1 { text-align: center; margin-top: 0; }
+            p { text-align: center; color: #cccccc; }
+            
+            .form-group {
+                margin: 20px 0;
+                background: #1e1e1e;
+                padding: 20px;
+                border-radius: 8px;
+                border: 1px solid #444;
+            }
+            label.section-title {
+                font-size: 16px;
+                font-weight: bold;
+                display: block;
+                margin-bottom: 15px;
+                color: #0078D7;
+            }
+            
+            /* Estilos para Radio y Checkbox */
+            .radio-group {
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+            }
+            .radio-label {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                cursor: pointer;
+                font-size: 15px;
+            }
+            .checkbox-group {
+                margin-top: 20px;
+                padding-top: 15px;
+                border-top: 1px solid #444;
+            }
+            .toeic-info {
+                color: #aaaaaa;
+                font-size: 13px;
+                font-style: italic;
+                margin-left: 28px;
+                margin-top: 5px;
+            }
+
+            /* Estilos para los Inputs de Credenciales */
+            .input-group {
+                margin-bottom: 15px;
+            }
+            .input-group:last-child {
+                margin-bottom: 0;
+            }
+            .input-label {
+                display: block;
+                font-size: 14px;
+                margin-bottom: 5px;
+                color: #ddd;
+            }
+            .text-input {
+                width: 100%;
+                box-sizing: border-box;
+                padding: 10px;
+                background: #2d2d2d;
+                border: 1px solid #555;
+                color: white;
+                border-radius: 5px;
+                font-family: 'Consolas', monospace;
+            }
+            .text-input:focus {
+                outline: none;
+                border-color: #0078D7;
+            }
+            
+            .btn { 
+                background: #0078D7; 
+                color: white; 
+                border: none; 
+                padding: 15px; 
+                font-size: 16px; 
+                cursor: pointer; 
+                border-radius: 6px;
+                font-weight: bold;
+                width: 100%;
+                transition: background 0.2s;
+            }
+            .btn:hover { background: #005a9e; }
+            .btn:disabled { background: #444; cursor: not-allowed; }
+            
+            #console-log { 
+                background: #0c0c0c; 
+                color: #00ff00; 
+                padding: 15px; 
+                height: 200px; 
+                overflow-y: auto; 
+                margin-top: 25px; 
+                font-family: 'Consolas', monospace;
+                border-radius: 5px;
+                border: 1px solid #333;
+                font-size: 13px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>EngDis Bot</h1>
+            <p>Configura tu sesión para iniciar la automatización</p>
+            
+            <!-- Bloque 1: Credenciales -->
+            <div class="form-group">
+                <label class="section-title">Credenciales del Sistema</label>
+                <div class="input-group">
+                    <label class="input-label">USS Token (Bearer):</label>
+                    <input type="password" id="ussToken" class="text-input" placeholder="Pega tu token de sesión aquí...">
+                </div>
+                <div class="input-group">
+                    <label class="input-label">Gemini API Key:</label>
+                    <input type="password" id="geminiKey" class="text-input" placeholder="AI Studio API Key...">
+                </div>
+            </div>
+
+            <!-- Bloque 2: Configuración del Curso -->
+            <div class="form-group">
+                <label class="section-title">Nivel de Inglés</label>
+                <div class="radio-group">
+                    <label class="radio-label">
+                        <input type="radio" name="level" value="basic3" checked>
+                        General English: Basic 3
+                    </label>
+                    <label class="radio-label">
+                        <input type="radio" name="level" value="int1">
+                        General English: Intermediate 1
+                    </label>
+                </div>
+
+                <div class="checkbox-group">
+                    <label class="radio-label">
+                        <input type="checkbox" id="toeicCheckbox">
+                        Completar también el TOEIC correspondiente
+                    </label>
+                    <div id="toeicHelper" class="toeic-info">Se resolverá el TOEIC Official Learning 2</div>
+                </div>
+            </div>
+
+            <button class="btn" id="btnStart">Iniciar</button>
+            
+            <div id="console-log">
+                [*] Sistema iniciado. Esperando credenciales...<br>
+            </div>
+        </div>
+
+    <script>
+            const { ipcRenderer } = require('electron'); // Importamos el comunicador de Electron
+
+            const logBox = document.getElementById('console-log');
+            const radioLevels = document.getElementsByName('level');
+            const toeicHelper = document.getElementById('toeicHelper');
+            const toeicCheckbox = document.getElementById('toeicCheckbox');
+            const btnStart = document.getElementById('btnStart');
+            
+            const inputUssToken = document.getElementById('ussToken');
+            const inputGeminiKey = document.getElementById('geminiKey');
+
+            function appendLog(text, color = '#00ff00') {
+                logBox.innerHTML += `<div style="color: ${color};">${text}</div>`;
+                logBox.scrollTop = logBox.scrollHeight; 
+            }
+
+            radioLevels.forEach(radio => {
+                radio.addEventListener('change', (e) => {
+                    if (e.target.value === 'basic3') {
+                        toeicHelper.innerText = "Se resolverá el TOEIC Official Learning 2";
+                    } else {
+                        toeicHelper.innerText = "Se resolverá el TOEIC Official Learning 3";
+                    }
+                });
+            });
+
+            // Escuchamos los logs que manda el backend y los pintamos
+            ipcRenderer.on('bot-log', (event, data) => {
+                appendLog(data.text, data.color);
+            });
+
+            // Escuchamos cuando el bot termina para reactivar la interfaz
+            ipcRenderer.on('bot-finish', () => {
+                btnStart.disabled = false;
+                inputUssToken.disabled = false;
+                inputGeminiKey.disabled = false;
+                toeicCheckbox.disabled = false;
+                radioLevels.forEach(r => r.disabled = false);
+                btnStart.style.background = "#0078D7";
+                btnStart.innerText = "Automatización Finalizada (Iniciar de nuevo)";
+            });
+
+            btnStart.addEventListener('click', () => {
+                const token = inputUssToken.value.trim();
+                const geminiKey = inputGeminiKey.value.trim();
+
+                if (!token || !geminiKey) {
+                    appendLog('[!] Error: Debes ingresar tu USS Token y tu Gemini API Key.', '#ff4444');
+                    return;
+                }
+
+                const selectedLevel = document.querySelector('input[name="level"]:checked').value;
+                const includeToeic = toeicCheckbox.checked;
+
+                btnStart.disabled = true;
+                inputUssToken.disabled = true;
+                inputGeminiKey.disabled = true;
+                toeicCheckbox.disabled = true;
+                radioLevels.forEach(r => r.disabled = true);
+                btnStart.style.background = "#444";
+                btnStart.innerText = "El bot está trabajando...";
+
+                appendLog(`\n[*] Credenciales cargadas. Iniciando protocolo...`, '#0078D7');
+                
+                // EL PUENTE IPC: Enviamos los datos al backend (main.js)
+                ipcRenderer.send('start-bot', { token, geminiKey, selectedLevel, includeToeic });
+            });
+        </script>
+    </body>
+</html>

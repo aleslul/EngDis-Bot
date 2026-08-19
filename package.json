@@ -9,13 +9,14 @@
   },
   "name": "auto-engdis",
   "version": "1.0.0",
-  "description": "Unofficial Bot EngDis API.",
-  "main": "index.js",
+  "description": "IDKIDKIDKIDC",
+  "main": "main.js",
   "directories": {
     "lib": "lib"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "electron ."
   },
   "repository": {
     "type": "git",
@@ -24,8 +25,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/BossNz/auto-engdis/issues"
-  },
-  "homepage": "https://github.com/BossNz/auto-engdis#readme"
+  "devDependencies": {
+    "electron": "^30.0.0" 
+  }
 }

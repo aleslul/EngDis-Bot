@@ -1,7 +1,10 @@
 import axios from "axios";
-import { config } from "../config/env.config.js";
 
 export class AiService {
+    constructor(geminiApiKey) {
+        this.geminiApiKey = geminiApiKey;
+    }
+
     async getAnswer(pregunta, opciones, context = "") {
         const preguntaLimpia = pregunta.replace(/<[^>]*>?/gm, '').trim() || "Task context.";
 
@@ -13,21 +16,15 @@ export class AiService {
         promptUSS += `\n\nIMPORTANT: Respond ONLY with the ID of the correct answer. No explanations.`;
 
         try {
-        // Endpoint oficial de la API de Gemini
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${config.geminiApiKey}`;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${this.geminiApiKey}`;
 
         const res = await axios.post(url, {
             contents: [{ parts: [{ text: promptUSS }] }],
-            generationConfig: {
-            temperature: 0.1 // Temperatura baja para respuestas exactas
-            }
+            generationConfig: { temperature: 0.1 }
         }, {
-            headers: {
-            'Content-Type': 'application/json'
-            }
+            headers: { 'Content-Type': 'application/json' }
         });
 
-        // La API de Gemini devuelve el texto en esta ruta específica del JSON
         return res.data.candidates[0].content.parts[0].text.trim();
         
         } catch (error) {
