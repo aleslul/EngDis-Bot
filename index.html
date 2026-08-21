@@ -160,6 +160,15 @@
                     </label>
                     <div id="toeicHelper" class="toeic-info">Se resolverá el TOEIC Official Learning 2</div>
                 </div>
+
+                <!-- NUEVA OPCIÓN: Modo Fantasma -->
+                <div class="checkbox-group" style="border-top: none; margin-top: 10px;">
+                    <label class="radio-label">
+                        <input type="checkbox" id="timeOnlyCheckbox">
+                            Solo inyectar tiempo
+                    </label>
+                    <div class="toeic-info">Ignora tests/lecciones y añade horas de estudio</div>
+                </div>
             </div>
 
             <button class="btn" id="btnStart">Iniciar</button>
@@ -176,10 +185,13 @@
             const radioLevels = document.getElementsByName('level');
             const toeicHelper = document.getElementById('toeicHelper');
             const toeicCheckbox = document.getElementById('toeicCheckbox');
+            const timeOnlyCheckbox = document.getElementById('timeOnlyCheckbox'); // Capturamos el DOM
             const btnStart = document.getElementById('btnStart');
             
             const inputUssToken = document.getElementById('ussToken');
             const inputGeminiKey = document.getElementById('geminiKey');
+
+            
 
             function appendLog(text, color = '#00ff00') {
                 logBox.innerHTML += `<div style="color: ${color};">${text}</div>`;
@@ -223,19 +235,22 @@
 
                 const selectedLevel = document.querySelector('input[name="level"]:checked').value;
                 const includeToeic = toeicCheckbox.checked;
+                const timeInjectionOnly = timeOnlyCheckbox.checked; // Leemos la opción
 
                 btnStart.disabled = true;
                 inputUssToken.disabled = true;
                 inputGeminiKey.disabled = true;
                 toeicCheckbox.disabled = true;
+                timeOnlyCheckbox.disabled = true; // Bloqueamos
                 radioLevels.forEach(r => r.disabled = true);
                 btnStart.style.background = "#444";
                 btnStart.innerText = "El bot está trabajando...";
 
                 appendLog(`\n[*] Credenciales cargadas. Iniciando protocolo...`, '#0078D7');
+                if (timeInjectionOnly) appendLog(`[⏳] MODO FANTASMA ACTIVADO: Procediendo a inyectar horas masivas...`, '#00ff00');
                 
-                // EL PUENTE IPC: Enviamos los datos al backend (main.js)
-                ipcRenderer.send('start-bot', { token, geminiKey, selectedLevel, includeToeic });
+                // Enviamos el nuevo parámetro al backend
+                ipcRenderer.send('start-bot', { token, geminiKey, selectedLevel, includeToeic, timeInjectionOnly });
             });
         </script>
     </body>

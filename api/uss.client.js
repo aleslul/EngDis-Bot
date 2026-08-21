@@ -4,15 +4,19 @@ import crypto from "crypto";
 export class UssClient {
     constructor(baseUrl, token) {
         this.api = axios.create({
-        baseURL: baseUrl,
-        headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/json, text/plain, */*',
-            'Origin': 'https://ed.engdis.com',
-            'Referer': 'https://ed.engdis.com/',
-            'Authorization': `Bearer ${token?.trim()}`
-        }
+            baseURL: baseUrl,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json, text/plain, */*',
+                'Origin': 'https://ed.engdis.com',
+                'Referer': 'https://ed.engdis.com/',
+                'Authorization': `Bearer ${token?.trim()}`
+            }
         });
+        
+        // CORRECCIÓN: Los IDs de sesión y pestaña se generan UNA sola vez al abrir el bot
+        this.userSessionId = crypto.randomUUID();
+        this.tabId = crypto.randomUUID();
     }
 
     getStudentId() {
@@ -25,16 +29,16 @@ export class UssClient {
         }
     }
 
-    async setTimeOnLesson(courseId, lessonId, lessonSessionId) {
+    async setTimeOnLesson(courseId, lessonId, lessonSessionId, status = "S", customTimestamp = null) {
         const payload = {
             StudentId: this.getStudentId(),
             LessonId: lessonId,
             CourseId: courseId,
-            UserSessionId: crypto.randomUUID(),
-            TimeStamp: Date.now(),
-            TabId: crypto.randomUUID(),
+            UserSessionId: this.userSessionId, // Usamos la sesión persistente
+            TimeStamp: customTimestamp || Date.now(),
+            TabId: this.tabId, // Usamos la pestaña persistente
             LessonSessionId: lessonSessionId,
-            Status: "S"
+            Status: status 
         };
         try {
             await this.api.post('Progress/SetTimeOnLesson/', payload);

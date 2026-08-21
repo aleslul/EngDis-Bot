@@ -44,15 +44,14 @@ console.log = (...args) => {
 // EL PUENTE IPC: Escuchando la orden del Frontend
 ipcMain.on('start-bot', async (event, config) => {
     try {
-        const { token, geminiKey, selectedLevel, includeToeic } = config;
+        // Extraemos la nueva variable timeInjectionOnly
+        const { token, geminiKey, selectedLevel, includeToeic, timeInjectionOnly } = config;
         const baseUrl = "https://edwebservices.engdis.com/api/";
 
-        // Inicializamos los servicios con las credenciales de la ventana
         const ussClient = new UssClient(baseUrl, token);
         const aiService = new AiService(geminiKey);
         const botService = new BotService(ussClient, aiService);
 
-        // Mapeo automático de IDs según el nivel
         let targetCourseId = selectedLevel === 'basic3' ? 44205 : 44845;
         let toeicCourseId = selectedLevel === 'basic3' ? 1547470 : 1548014;
 
@@ -60,24 +59,22 @@ ipcMain.on('start-bot', async (event, config) => {
         const resMain = await ussClient.getSpecificCourseProgress(targetCourseId);
         
         if (!resMain.isSuccess) {
-            console.log("[!] Error crítico: USS Token inválido, expirado, o no estás inscrito en ese nivel.");
+            console.log("[!] Error crítico: USS Token inválido o expirado.");
             event.reply('bot-finish');
             return;
         }
 
-        // 1. Procesar General English
+        // 1. Procesar General English (Pasamos la bandera timeInjectionOnly al final)
         const coursesMain = resMain.data.map(i => ({ NodeId: i.NodeId, ParentNodeId: i.ParentNodeId, Name: i.Name }));
-        await botService.processCourses(coursesMain, false);
+        await botService.processCourses(coursesMain, false, timeInjectionOnly);
 
-        // 2. Procesar TOEIC (Si el usuario marcó la casilla)
+        // 2. Procesar TOEIC
         if (includeToeic) {
             console.log(`\n[*] Iniciando módulo TOEIC...`);
             const resToeic = await ussClient.getSpecificCourseProgress(toeicCourseId);
             if (resToeic.isSuccess) {
                 const coursesToeic = resToeic.data.map(i => ({ NodeId: i.NodeId, ParentNodeId: i.ParentNodeId, Name: i.Name }));
-                await botService.processCourses(coursesToeic, true);
-            } else {
-                console.log("[!] No se pudo acceder al TOEIC de este nivel.");
+                await botService.processCourses(coursesToeic, true, timeInjectionOnly);
             }
         }
 
@@ -85,7 +82,7 @@ ipcMain.on('start-bot', async (event, config) => {
         console.log("[#] TODAS LAS TAREAS COMPLETADAS CON ÉXITO");
         console.log("========================================");
         
-        event.reply('bot-finish'); // Le avisamos al frontend que terminamos
+        event.reply('bot-finish'); 
 
     } catch (error) {
         console.log(`[!] Error crítico del sistema: ${error.message}`);
