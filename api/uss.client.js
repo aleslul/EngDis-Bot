@@ -80,36 +80,57 @@ export class UssClient {
         }
     }
 
-    async getTestItem(code, nodeId, parentId, partCounter = null) {
+async getTestItem(code, nodeId, parentId, partCounter = null) {
         const ids = [nodeId, parentId];
         let suffixes = ["t001", "t01", "t0", ""];
 
         if (partCounter) {
-        suffixes = [`t10${partCounter}`, `t0${partCounter}`, `t00${partCounter}`, ...suffixes];
+            suffixes = [
+                `t00${partCounter}`, // Ej: i1rackt001, i1rackt002
+                `t0${partCounter}`,  // Ej: t01, t02
+                `t10${partCounter}`, // Ej: t101, t102 (Magazine)
+                ...suffixes
+            ];
         }
 
+        // Probamos con itemType 25 y 23 (como exige el backend en distintos tipos de pregunta)
+        const itemTypes = ["25", "23"];
+
         for (const id of ids) {
-        for (const sfx of suffixes) {
-            try {
-            const url = `practiceManager/GetItem/${id}/${code}${sfx}/25/0/2/`;
-            const res = await this.api.get(url);
-            if (res.data && (res.data.i || res.data.questions)) {
-                return { isSuccess: true, data: res.data };
+            for (const sfx of suffixes) {
+                for (const iType of itemTypes) {
+                    try {
+                        const fullCode = `${code}${sfx}`;
+                        const url = `practiceManager/GetItem/${id}/${fullCode}/${iType}/0/2/`;
+                        const res = await this.api.get(url);
+                        if (res.data && (res.data.i || res.data.questions)) {
+                            return { 
+                                isSuccess: true, 
+                                data: res.data, 
+                                matchedCode: fullCode, 
+                                matchedType: iType 
+                            };
+                        }
+                    } catch (e) {
+                        continue; 
+                    }
+                }
             }
-            } catch (e) {
-            continue; 
-            }
-        }
         }
         return { isSuccess: false };
     }
     
-    async SaveUserTestV1(nodeId, ParentNodeId, body) {
+    // parentUnitId = 44846 (Unidad), lessonNodeId = 38 (Lección)
+    async SaveUserTestV1(parentUnitId, lessonNodeId, answersArray, timeSpentMs = 45000) {
         try {
-        const { data } = await this.api.post(`/UserTestV1/SaveUserTest/${ParentNodeId}/${nodeId}/true`, { a: body });
-        return { isSuccess: true, data };
+            const payload = {
+                a: answersArray,
+                t: timeSpentMs
+            };
+            const { data } = await this.api.post(`/UserTestV1/SaveUserTest/${parentUnitId}/${lessonNodeId}/true`, payload);
+            return { isSuccess: true, data };
         } catch (e) {
-        return { isSuccess: false };
+            return { isSuccess: false, error: e.message };
         }
     }
 

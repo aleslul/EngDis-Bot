@@ -16,9 +16,7 @@ export class AiService {
         promptUSS += `\n\nIMPORTANT: Respond ONLY with the ID of the correct answer. No explanations.`;
 
         try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${this.geminiApiKey}`;
-
-        const res = await axios.post(url, {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${this.geminiApiKey}`;        const res = await axios.post(url, {
             contents: [{ parts: [{ text: promptUSS }] }],
             generationConfig: { temperature: 0.1 }
         }, {

@@ -10,20 +10,26 @@ export class BotService {
     async processCourses(courses, isToeic, timeInjectionOnly = false) {
         for (const course of courses) {
             console.log(`\n========================================`);
-            console.log(`🚀 PROCESANDO CURSO/UNIDAD: ${course.Name || course.NodeId}`);
+            console.log(`🚀 PROCESANDO UNIDAD: ${course.Name || course.NodeId}`);
             console.log(`========================================`);
 
             const tree = await this.uss.getCourseTree(course.NodeId, course.ParentNodeId);
             if (!tree.isSuccess) continue;
-            const courseId = course.ParentNodeId; 
+            
+            const courseId = course.ParentNodeId; // Ej: 44845 (Intermediate 1)
+            const unitId = course.NodeId;         // Ej: 44846 (Unit 1: Education)
 
             for (const unit of tree.data) {
-                if (!timeInjectionOnly && (unit.IsDone || unit.Progress === 1.0 || unit.Progress === 100)) {
-                    console.log(`\n[✔] Unidad: ${unit.Name} -> COMPLETADA (Saltando...)`);
+                // Verificamos si tiene un Test sin nota (Grade === null) aunque figure como IsDone
+                const testSection = unit.Children?.find(s => s.Name === "Test");
+                const testMissingScore = testSection && (testSection.Grade === null || testSection.Grade === undefined || unit.Grade === null);
+
+                if (!timeInjectionOnly && !testMissingScore && (unit.IsDone || unit.Progress === 1.0 || unit.Progress === 100)) {
+                    console.log(`\n[✔] Lección: ${unit.Name} -> COMPLETADA CON NOTA (Saltando...)`);
                     continue;
                 }
 
-                console.log(`\n[*] Lección: ${unit.Name}`);
+                console.log(`\n[*] Lección: ${unit.Name} (ID: ${unit.NodeId})`);
                 const lessonCode = unit["Metadata"] ? unit["Metadata"]["Code"] : null;
                 let contextText = "";
                 
@@ -33,111 +39,133 @@ export class BotService {
                 }
                 
                 for (const section of unit.Children) {
-                    if (!timeInjectionOnly && (section.IsDone || section.Progress === 1.0 || section.Progress === 100)) {
+                    const isTest = section.Name === "Test";
+                    const needsTestRepair = isTest && (section.Grade === null || unit.Grade === null);
+
+                    if (!timeInjectionOnly && !needsTestRepair && (section.IsDone || section.Progress === 1.0 || section.Progress === 100)) {
                         console.log(`  [✔] ${section.Name} -> Listo`);
                         continue;
                     }
 
-                    // ⏳ PROTOCOLO DE TIEMPO ORGÁNICO
                     const lessonSessionId = crypto.randomUUID();
-                    const randomMinutes = Math.floor(Math.random() * (16 - 8 + 1)) + 8; // Entre 8 y 16 minutos
+                    const randomMinutes = Math.floor(Math.random() * (14 - 8 + 1)) + 8;
 
-                    // Iniciamos la lección (El servidor registra el inicio real)
                     await this.uss.setTimeOnLesson(courseId, section.NodeId, lessonSessionId, "S", Date.now());
                     
                     if (timeInjectionOnly) {
                         console.log(`  [⏳] MODO FANTASMA: Simulando ${randomMinutes} min reales en "${section.Name}"...`);
-                        
-                        // IDLE LOOP: Espera humana real para evadir la validación del servidor
                         for (let i = 0; i < randomMinutes; i++) {
-                            await new Promise(r => setTimeout(r, 60000)); // Espera 60 segundos exactos
-                            await this.uss.sendPing(lessonSessionId); // Avisa al servidor "sigo aquí"
+                            await new Promise(r => setTimeout(r, 60000));
+                            await this.uss.sendPing(lessonSessionId);
                             console.log(`    [-] Ping de actividad: Minuto ${i+1}/${randomMinutes} validado.`);
                         }
-                        
                     } else {
-                        // LÓGICA NORMAL DE TAREAS Y TESTS
-                        if (section.Name !== "Test") {
+                        if (!isTest) {
                             console.log(`  [>] Completando: ${section.Name}`);
                             for (const task of section.Children) {
                                 if (task.IsDone || task.Progress === 1.0) continue;
                                 await this.uss.setSucessTask(courseId, task.NodeId);
-                                
                                 await this.uss.sendPing(lessonSessionId);
                                 await new Promise(r => setTimeout(r, 1000));
                             }
                         } else {
-                            console.log(`  [!] Iniciando Oráculo para el Test...`);
+                            console.log(`  [!] Iniciando Oráculo para el Test completo...`);
                             if (!lessonCode) continue;
 
-                            let partCounter = 1;
-                            const testTasks = section.Children && section.Children.length > 0 ? section.Children : [{ NodeId: section.NodeId, Metadata: { Code: lessonCode } }];
+                            const testTasks = section.Children && section.Children.length > 0 
+                                ? section.Children 
+                                : [{ NodeId: section.NodeId, Metadata: { Code: lessonCode } }];
 
-                            for (const task of testTasks) {
-                                if (task.IsDone || task.Progress === 1.0) {
-                                    console.log(`    [✔] Parte ${partCounter} ya aprobada.`);
-                                    partCounter++;
-                                    continue;
-                                }
-                                const taskCode = task.Metadata?.Code ? task.Metadata.Code : lessonCode;
-                                // CORRECCIÓN: Ahora enviamos el lessonSessionId como 6to parámetro
-                                await this.resolveTest(taskCode, task.NodeId, courseId, contextText, partCounter, lessonSessionId);
-                                partCounter++;
-                            }
+                            // Resolvemos TODAS las partes del Test y las enviamos en UN SOLO POST
+                            await this.resolveFullTest(
+                                unitId,         // 44846 (ID de la Unidad Padre)
+                                unit.NodeId,    // 38 (ID de la Lección)
+                                lessonCode,     // Ej: "i1rack"
+                                testTasks,      // Array con las tareas [23875, 23876, ...]
+                                contextText, 
+                                lessonSessionId
+                            );
                         }
                     }
-                    // Cerramos la lección
                     await this.uss.setTimeOnLesson(courseId, section.NodeId, lessonSessionId, "E", Date.now());
                 }
             }
         }
     }
 
-    // CORRECCIÓN: Agregamos lessonSessionId a los parámetros
-    async resolveTest(code, nodeId, courseId, contextText, partCounter, lessonSessionId) {
+    async resolveFullTest(unitId, lessonNodeId, lessonCode, testTasks, contextText, lessonSessionId) {
         try {
-            await this.uss.setSucessTask(courseId, nodeId); 
-            await new Promise(r => setTimeout(r, 1000));
-
-            const res = await this.uss.getTestItem(code, nodeId, courseId, partCounter);
-            if (!res.isSuccess) return console.log(`    [!] Error: La USS no devolvió el test para ${code} (Parte ${partCounter})`);
-
-            const item = res.data.i || res.data.item || res.data;
-            const questions = item.q || item.questions;
             const submitAnswer = [];
+            let partCounter = 1;
+            const startTime = Date.now();
 
-            for (const q of questions) {
-                const rawQuestion = q.qt || (typeof q.t === 'string' ? q.t : null) || q.d || "Context task";
-                const preguntaTexto = rawQuestion.toString().replace(/<[^>]*>?/gm, '').trim();
+            for (const task of testTasks) {
+                const taskCode = task.Metadata?.Code ? task.Metadata.Code : lessonCode;
                 
-                let rawOptions = [];
-                if (q.al) q.al.forEach(blank => { if (blank.a) rawOptions.push(...blank.a); });
-                if (item.d) rawOptions.push(...item.d); 
-                if (q.d) rawOptions.push(...q.d);       
+                // Obtenemos la pregunta de esta parte (ej: 23875 / i1rackt001)
+                const res = await this.uss.getTestItem(taskCode, task.NodeId, lessonNodeId, partCounter);
+                if (!res.isSuccess) {
+                    console.log(`    [!] No se pudo obtener la parte ${partCounter} (${taskCode})`);
+                    partCounter++;
+                    continue;
+                }
 
-                const options = rawOptions.map(opt => ({
-                    id: opt.id,
-                    text: (opt.txt || opt.t || "").toString().replace(/<[^>]*>?/gm, '').trim()
-                }));
+                const item = res.data.i || res.data.item || res.data;
+                const questions = item.q || item.questions || [];
+                const userAnswersForTask = [];
 
-                const idCorrecto = await this.ai.getAnswer(preguntaTexto, options, contextText);
-                const finalAnswerId = ScraperUtil.parseAnswerId(idCorrecto, options);
+                for (const q of questions) {
+                    const rawQuestion = q.qt || (typeof q.t === 'string' ? q.t : null) || q.d || "Select the best answer.";
+                    const preguntaTexto = rawQuestion.toString().replace(/<[^>]*>?/gm, '').trim();
+                    
+                    let rawOptions = [];
+                    if (q.al) q.al.forEach(blank => { if (blank.a) rawOptions.push(...blank.a); });
+                    if (item.d) rawOptions.push(...item.d); 
+                    if (q.d) rawOptions.push(...q.d);       
 
-                const aIdArray = q.al ? q.al.map(blank => [blank.id, finalAnswerId]) : [];
+                    const options = rawOptions.map(opt => ({
+                        id: opt.id,
+                        text: (opt.txt || opt.t || "").toString().replace(/<[^>]*>?/gm, '').trim()
+                    }));
+
+                    const idCorrecto = await this.ai.getAnswer(preguntaTexto, options, contextText);
+                    const finalAnswerId = ScraperUtil.parseAnswerId(idCorrecto, options);
+
+                    const aIdArray = q.al ? q.al.map(blank => [blank.id, finalAnswerId]) : [];
+                    userAnswersForTask.push({
+                        qId: q.id,
+                        aId: aIdArray
+                    });
+                    
+                    console.log(`      [-] Parte ${partCounter} (ID: ${task.NodeId}) -> Respuesta elegida: ${finalAnswerId}`);
+                }
+
+                // Empaquetamos con el formato EXACTO que exige SaveUserTest
                 submitAnswer.push({
-                    iId: item.id, iCode: item.c, iType: item.t || 1,
-                    ua: [{ qId: q.id, aId: aIdArray }]
-                });            
-                
-                console.log(`      [-] Pregunta procesada. ID elegido: ${finalAnswerId}`);
-                
-                // CORRECCIÓN: Ping activado. Mientras el bot "piensa" 12s, le dice a la USS que sigue activo.
+                    iId: String(task.NodeId),              // "23875"
+                    iCode: res.matchedCode,                // "i1rackt001"
+                    iType: String(res.matchedType || "25"),// "25" o "23"
+                    ua: userAnswersForTask
+                });
+
                 await this.uss.sendPing(lessonSessionId);
-                await new Promise(r => setTimeout(r, 12000)); 
+                await new Promise(r => setTimeout(r, 4000)); // Pausa entre preguntas
+                partCounter++;
             }
 
-            const status = await this.uss.SaveUserTestV1(nodeId, courseId, submitAnswer);
-            console.log(`    [#] Resultado -> ${status.data?.finalMark ? status.data.finalMark + "%" : "Enviada"}`);
+            if (submitAnswer.length === 0) {
+                console.log(`    [!] No se generaron respuestas para enviar en este Test.`);
+                return;
+            }
+
+            const timeSpentMs = Math.max(Date.now() - startTime, 32000);
+            const status = await this.uss.SaveUserTestV1(unitId, lessonNodeId, submitAnswer, timeSpentMs);
+            
+            if (status.isSuccess && status.data?.finalMark !== undefined) {
+                console.log(`    [#] Test Guardado Oficialmente -> Nota Final (Last Test Score): ${status.data.finalMark}%`);
+            } else {
+                console.log(`    [!] Respuesta inesperada al guardar Test:`, status.data || status.error);
+            }
         } catch (e) {
             console.log(`    [!] Error en Test:`, e.message);
         }

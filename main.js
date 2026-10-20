@@ -52,8 +52,20 @@ ipcMain.on('start-bot', async (event, config) => {
         const aiService = new AiService(geminiKey);
         const botService = new BotService(ussClient, aiService);
 
-        let targetCourseId = selectedLevel === 'basic3' ? 44205 : 44845;
-        let toeicCourseId = selectedLevel === 'basic3' ? 1547470 : 1548014;
+        // Mapeo automático de IDs según el nivel seleccionado
+        let targetCourseId;
+        let toeicCourseId;
+
+        if (selectedLevel === 'basic3') {
+            targetCourseId = 44205;
+            toeicCourseId = 1547470; // TOEIC 2
+        } else if (selectedLevel === 'int1') {
+            targetCourseId = 44845;
+            toeicCourseId = 1548014; // TOEIC 3
+        } else if (selectedLevel === 'int2') {
+            targetCourseId = 45178; 
+            toeicCourseId = 1548014; // TOEIC 3
+        }
 
         console.log(`\n[*] Validando token en la USS...`);
         const resMain = await ussClient.getSpecificCourseProgress(targetCourseId);
