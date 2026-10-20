@@ -80,21 +80,27 @@ export class UssClient {
         }
     }
 
-async getTestItem(code, nodeId, parentId, partCounter = null) {
+    async getTestItem(code, nodeId, parentId, partCounter = null) {
         const ids = [nodeId, parentId];
         let suffixes = ["t001", "t01", "t0", ""];
 
-        if (partCounter) {
+        if (partCounter !== null) {
+            // padStart asegura el formato exacto:
+            // Si partCounter es 1  -> pad3 = "001", pad2 = "01"
+            // Si partCounter es 10 -> pad3 = "010", pad2 = "10" (¡Evita el bug de "t0010"!)
+            const pad3 = String(partCounter).padStart(3, '0');
+            const pad2 = String(partCounter).padStart(2, '0');
+
             suffixes = [
-                `t00${partCounter}`, // Ej: i1rackt001, i1rackt002
-                `t0${partCounter}`,  // Ej: t01, t02
-                `t10${partCounter}`, // Ej: t101, t102 (Magazine)
+                `t${pad3}`,   // Ej: t001..t009, t010..t012
+                `t${pad2}`,   // Ej: t01..t09, t10..t12
+                `t1${pad2}`,  // Ej: t101..t112 (Magazine)
                 ...suffixes
             ];
         }
 
-        // Probamos con itemType 25 y 23 (como exige el backend en distintos tipos de pregunta)
-        const itemTypes = ["25", "23"];
+        // Incluimos los tipos adicionales que usan los tests de Vocabulario y Gramática
+        const itemTypes = ["25", "23", "24", "21", "20"];
 
         for (const id of ids) {
             for (const sfx of suffixes) {
@@ -120,17 +126,19 @@ async getTestItem(code, nodeId, parentId, partCounter = null) {
         return { isSuccess: false };
     }
     
-    // parentUnitId = 44846 (Unidad), lessonNodeId = 38 (Lección)
-    async SaveUserTestV1(parentUnitId, lessonNodeId, answersArray, timeSpentMs = 45000) {
+    async SaveUserTestV1(parentUnitId, lessonNodeId, answersArray, timeSpentMs = 28000) {
         try {
+            // System.Int16 en C# soporta máximo 32,767. Limitamos entre 15000 y 32000.
+            const safeInt16Time = Math.min(Math.max(Math.floor(timeSpentMs), 15000), 32000);
             const payload = {
                 a: answersArray,
-                t: timeSpentMs
+                t: safeInt16Time
             };
             const { data } = await this.api.post(`/UserTestV1/SaveUserTest/${parentUnitId}/${lessonNodeId}/true`, payload);
             return { isSuccess: true, data };
         } catch (e) {
-            return { isSuccess: false, error: e.message };
+            const serverError = e.response?.data ? JSON.stringify(e.response.data) : e.message;
+            return { isSuccess: false, error: serverError };
         }
     }
 

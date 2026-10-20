@@ -20,12 +20,17 @@ export class BotService {
             const unitId = course.NodeId;         // Ej: 44846 (Unit 1: Education)
 
             for (const unit of tree.data) {
-                // Verificamos si tiene un Test sin nota (Grade === null) aunque figure como IsDone
                 const testSection = unit.Children?.find(s => s.Name === "Test");
-                const testMissingScore = testSection && (testSection.Grade === null || testSection.Grade === undefined || unit.Grade === null);
+                
+                // Normalizamos la nota (a veces viene de 0 a 1, y a veces de 0 a 100)
+                const rawGrade = testSection?.Grade ?? unit.Grade ?? null;
+                const numericGrade = rawGrade !== null ? (rawGrade <= 1 && rawGrade > 0 ? rawGrade * 100 : Number(rawGrade)) : null;
+                
+                // Si no tiene nota, o si la nota es menor a 80%, entramos a resolverlo de nuevo
+                const testNeedsWork = testSection && (numericGrade === null || numericGrade < 80);
 
-                if (!timeInjectionOnly && !testMissingScore && (unit.IsDone || unit.Progress === 1.0 || unit.Progress === 100)) {
-                    console.log(`\n[✔] Lección: ${unit.Name} -> COMPLETADA CON NOTA (Saltando...)`);
+                if (!timeInjectionOnly && !testNeedsWork && (unit.IsDone || unit.Progress === 1.0 || unit.Progress === 100)) {
+                    console.log(`\n[✔] Lección: ${unit.Name} -> COMPLETADA CON NOTA (${numericGrade}%) (Saltando...)`);
                     continue;
                 }
 
@@ -40,7 +45,7 @@ export class BotService {
                 
                 for (const section of unit.Children) {
                     const isTest = section.Name === "Test";
-                    const needsTestRepair = isTest && (section.Grade === null || unit.Grade === null);
+                    const needsTestRepair = isTest && testNeedsWork;
 
                     if (!timeInjectionOnly && !needsTestRepair && (section.IsDone || section.Progress === 1.0 || section.Progress === 100)) {
                         console.log(`  [✔] ${section.Name} -> Listo`);
@@ -95,15 +100,16 @@ export class BotService {
 
     async resolveFullTest(unitId, lessonNodeId, lessonCode, testTasks, contextText, lessonSessionId) {
         try {
-            const submitAnswer = [];
+            const parsedTasks = [];
+            const batchForAi = [];
             let partCounter = 1;
-            const startTime = Date.now();
+            let batchKeyCounter = 0;
 
+            // 1. Descargamos todas las preguntas del Test rápidamente
             for (const task of testTasks) {
                 const taskCode = task.Metadata?.Code ? task.Metadata.Code : lessonCode;
-                
-                // Obtenemos la pregunta de esta parte (ej: 23875 / i1rackt001)
                 const res = await this.uss.getTestItem(taskCode, task.NodeId, lessonNodeId, partCounter);
+                
                 if (!res.isSuccess) {
                     console.log(`    [!] No se pudo obtener la parte ${partCounter} (${taskCode})`);
                     partCounter++;
@@ -112,59 +118,96 @@ export class BotService {
 
                 const item = res.data.i || res.data.item || res.data;
                 const questions = item.q || item.questions || [];
-                const userAnswersForTask = [];
+                const taskQuestionsMeta = [];
 
                 for (const q of questions) {
-                    const rawQuestion = q.qt || (typeof q.t === 'string' ? q.t : null) || q.d || "Select the best answer.";
+                    const rawQuestion = q.qt || (typeof q.t === 'string' ? q.t : null) || q.d || "Complete the blank correctly.";
                     const preguntaTexto = rawQuestion.toString().replace(/<[^>]*>?/gm, '').trim();
-                    
-                    let rawOptions = [];
-                    if (q.al) q.al.forEach(blank => { if (blank.a) rawOptions.push(...blank.a); });
-                    if (item.d) rawOptions.push(...item.d); 
-                    if (q.d) rawOptions.push(...q.d);       
+                    const blanksMeta = [];
 
-                    const options = rawOptions.map(opt => ({
-                        id: opt.id,
-                        text: (opt.txt || opt.t || "").toString().replace(/<[^>]*>?/gm, '').trim()
-                    }));
+                    if (q.al && q.al.length > 0) {
+                        for (const blank of q.al) {
+                            let rawOptions = [];
+                            if (blank.a && blank.a.length > 0) rawOptions.push(...blank.a);
+                            else if (item.d && item.d.length > 0) rawOptions.push(...item.d);
+                            else if (q.d && q.d.length > 0) rawOptions.push(...q.d);
 
-                    const idCorrecto = await this.ai.getAnswer(preguntaTexto, options, contextText);
-                    const finalAnswerId = ScraperUtil.parseAnswerId(idCorrecto, options);
+                            const options = rawOptions.map(opt => ({
+                                id: opt.id,
+                                text: (opt.txt || opt.t || "").toString().replace(/<[^>]*>?/gm, '').trim()
+                            }));
 
-                    const aIdArray = q.al ? q.al.map(blank => [blank.id, finalAnswerId]) : [];
-                    userAnswersForTask.push({
-                        qId: q.id,
-                        aId: aIdArray
-                    });
-                    
-                    console.log(`      [-] Parte ${partCounter} (ID: ${task.NodeId}) -> Respuesta elegida: ${finalAnswerId}`);
+                            const key = String(batchKeyCounter++);
+                            batchForAi.push({
+                                key,
+                                part: partCounter,
+                                question: preguntaTexto,
+                                options
+                            });
+
+                            blanksMeta.push({ blankId: blank.id, key, options });
+                        }
+                    }
+                    taskQuestionsMeta.push({ qId: q.id, blanksMeta });
                 }
 
-                // Empaquetamos con el formato EXACTO que exige SaveUserTest
-                submitAnswer.push({
-                    iId: String(task.NodeId),              // "23875"
-                    iCode: res.matchedCode,                // "i1rackt001"
-                    iType: String(res.matchedType || "25"),// "25" o "23"
-                    ua: userAnswersForTask
+                parsedTasks.push({
+                    nodeId: String(task.NodeId),
+                    matchedCode: res.matchedCode,
+                    matchedType: String(res.matchedType || "25"),
+                    partCounter,
+                    taskQuestionsMeta
                 });
 
-                await this.uss.sendPing(lessonSessionId);
-                await new Promise(r => setTimeout(r, 4000)); // Pausa entre preguntas
                 partCounter++;
             }
 
-            if (submitAnswer.length === 0) {
-                console.log(`    [!] No se generaron respuestas para enviar en este Test.`);
+            if (parsedTasks.length === 0) {
+                console.log(`    [!] No se generaron preguntas para enviar en este Test.`);
                 return;
             }
 
-            const timeSpentMs = Math.max(Date.now() - startTime, 32000);
-            const status = await this.uss.SaveUserTestV1(unitId, lessonNodeId, submitAnswer, timeSpentMs);
+            // 2. UNA SOLA LLAMADA A GEMINI PARA TODO EL TEST
+            console.log(`    [⚡] Consultando ${batchForAi.length} respuestas al Oráculo en un solo lote...`);
+            const aiAnswersMap = await this.ai.getBatchAnswers(batchForAi, contextText);
+
+            // 3. Empaquetamos las respuestas
+            const submitAnswer = [];
+            for (const pt of parsedTasks) {
+                const userAnswersForTask = [];
+
+                for (const qMeta of pt.taskQuestionsMeta) {
+                    const aIdArray = [];
+                    for (const bMeta of qMeta.blanksMeta) {
+                        const rawAiChoice = aiAnswersMap[bMeta.key];
+                        const finalAnswerId = ScraperUtil.parseAnswerId(String(rawAiChoice ?? ""), bMeta.options);
+                        aIdArray.push([bMeta.blankId, finalAnswerId]);
+                    }
+                    userAnswersForTask.push({
+                        qId: qMeta.qId,
+                        aId: aIdArray
+                    });
+                    console.log(`      [-] Parte ${pt.partCounter} (ID: ${pt.nodeId}) -> Respuestas: ${JSON.stringify(aIdArray)}`);
+                }
+
+                submitAnswer.push({
+                    iId: pt.nodeId,
+                    iCode: pt.matchedCode,
+                    iType: pt.matchedType,
+                    ua: userAnswersForTask
+                });
+            }
+
+            await this.uss.sendPing(lessonSessionId);
+
+            // 4. Enviamos un tiempo seguro para Int16 (entre 24,000 y 31,500 ms)
+            const safeTimeMs = Math.floor(Math.random() * (31500 - 24000 + 1)) + 24000;
+            const status = await this.uss.SaveUserTestV1(unitId, lessonNodeId, submitAnswer, safeTimeMs);
             
             if (status.isSuccess && status.data?.finalMark !== undefined) {
                 console.log(`    [#] Test Guardado Oficialmente -> Nota Final (Last Test Score): ${status.data.finalMark}%`);
             } else {
-                console.log(`    [!] Respuesta inesperada al guardar Test:`, status.data || status.error);
+                console.log(`    [!] Respuesta inesperada al guardar Test: ${status.error || JSON.stringify(status.data)}`);
             }
         } catch (e) {
             console.log(`    [!] Error en Test:`, e.message);
