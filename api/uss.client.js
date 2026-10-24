@@ -80,27 +80,25 @@ export class UssClient {
         }
     }
 
-    async getTestItem(code, nodeId, parentId, partCounter = null) {
+async getTestItem(code, nodeId, parentId, partCounter = null) {
         const ids = [nodeId, parentId];
         let suffixes = ["t001", "t01", "t0", ""];
 
         if (partCounter !== null) {
-            // padStart asegura el formato exacto:
-            // Si partCounter es 1  -> pad3 = "001", pad2 = "01"
-            // Si partCounter es 10 -> pad3 = "010", pad2 = "10" (¡Evita el bug de "t0010"!)
             const pad3 = String(partCounter).padStart(3, '0');
             const pad2 = String(partCounter).padStart(2, '0');
 
+            // EXCLUSIVO para el número de parte actual (sin caer en "t001" por error)
             suffixes = [
-                `t${pad3}`,   // Ej: t001..t009, t010..t012
-                `t${pad2}`,   // Ej: t01..t09, t10..t12
-                `t1${pad2}`,  // Ej: t101..t112 (Magazine)
-                ...suffixes
+                `t${pad3}`,   // Ej: i1rackt004
+                `t${pad2}`,   // Ej: t04
+                `t1${pad2}`,  // Ej: t104
+                `t${partCounter}`
             ];
+            if (partCounter === 1) suffixes.push("t0", "");
         }
 
-        // Incluimos los tipos adicionales que usan los tests de Vocabulario y Gramática
-        const itemTypes = ["25", "23", "24", "21", "20"];
+        const itemTypes = ["25", "23", "24", "21", "20", "22", "15"];
 
         for (const id of ids) {
             for (const sfx of suffixes) {

@@ -98,12 +98,187 @@ export class BotService {
         }
     }
 
+    // Genera todas las combinaciones válidas para una parte del Test
+    buildCandidateAnswers(questions, item) {
+        const slots = [];
+        const globalPool = [
+            ...(item.d || []),
+            ...(item.al || []),
+            ...(item.choices || [])
+        ];
+
+        for (const q of questions) {
+            const qPool = [...(q.d || []), ...(q.a || []), ...globalPool];
+            const alList = q.al && q.al.length > 0 ? q.al : [{ id: 1, a: qPool }];
+
+            for (const blank of alList) {
+                let rawOpts = [];
+                if (blank.a && blank.a.length > 0) rawOpts = blank.a;
+                else if (qPool.length > 0) rawOpts = qPool;
+
+                const optIds = [...new Set(rawOpts.map(o => o.id).filter(id => id !== undefined))];
+                if (optIds.length === 0) optIds.push(1, 2, 3, 4);
+
+                slots.push({
+                    qId: q.id || 1,
+                    blankId: blank.id || 1,
+                    optIds,
+                    hasOwnOptions: Boolean(blank.a && blank.a.length > 0)
+                });
+            }
+        }
+
+        if (slots.length === 0) return [[]];
+
+        const formatUa = (assignment) => {
+            const qMap = new Map();
+            assignment.forEach((choice, idx) => {
+                const s = slots[idx];
+                if (!qMap.has(s.qId)) qMap.set(s.qId, []);
+                if (Array.isArray(choice)) {
+                    // Caso Checkbox múltiple (2 respuestas en el mismo blankId)
+                    choice.forEach(cId => qMap.get(s.qId).push([s.blankId, cId]));
+                } else {
+                    qMap.get(s.qId).push([s.blankId, choice]);
+                }
+            });
+            const ua = [];
+            for (const [qId, aId] of qMap.entries()) ua.push({ qId, aId });
+            return ua;
+        };
+
+        const candidates = [];
+
+        // CASO 1: Un solo espacio (Opción múltiple simple o Checkbox de elegir 2)
+        if (slots.length === 1) {
+            const opts = slots[0].optIds;
+            // Primero probamos selección simple (1 opción)
+            for (const id of opts) {
+                candidates.push(formatUa([id]));
+            }
+            // Si ninguna de 1 opción funcionó, probamos pares de 2 opciones (Checkboxes múltiples)
+            for (let i = 0; i < opts.length; i++) {
+                for (let j = i + 1; j < opts.length; j++) {
+                    candidates.push(formatUa([[opts[i], opts[j]]]));
+                }
+            }
+            return candidates;
+        }
+
+        // CASO 2: Múltiples espacios (Drag & Drop / Matching / Fill in blanks)
+        const sharedPool = slots.every(s => !s.hasOwnOptions);
+
+        const backtrack = (slotIdx, currentAssignment, usedSet) => {
+            if (candidates.length >= 120) return; // Límite de seguridad
+            if (slotIdx === slots.length) {
+                candidates.push(formatUa(currentAssignment));
+                return;
+            }
+            const opts = slots[slotIdx].optIds;
+            for (const id of opts) {
+                // En Drag & Drop con banco compartido, no repetimos la misma palabra en dos casillas
+                if (sharedPool && opts.length >= slots.length && usedSet.has(id)) continue;
+                currentAssignment.push(id);
+                usedSet.add(id);
+                backtrack(slotIdx + 1, currentAssignment, usedSet);
+                currentAssignment.pop();
+                usedSet.delete(id);
+            }
+        };
+
+        backtrack(0, [], new Set());
+
+        // Si por alguna razón una palabra sí se repetía, agregamos el producto cartesiano al final
+        if (sharedPool && candidates.length < 60) {
+            const backtrackWithRepeat = (slotIdx, currentAssignment) => {
+                if (candidates.length >= 120) return;
+                if (slotIdx === slots.length) {
+                    candidates.push(formatUa(currentAssignment));
+                    return;
+                }
+                for (const id of slots[slotIdx].optIds) {
+                    currentAssignment.push(id);
+                    backtrackWithRepeat(slotIdx + 1, currentAssignment);
+                    currentAssignment.pop();
+                }
+            };
+            backtrackWithRepeat(0, []);
+        }
+
+        return candidates.length > 0 ? candidates : [[]];
+    }
+
+    // Extrae todos los espacios en blanco (slots) de una parte del Test
+    extractSlotsFromItem(questions, item) {
+        const slots = [];
+        const globalPool = [
+            ...(item.d || []),
+            ...(item.al || []),
+            ...(item.choices || [])
+        ];
+
+        for (const q of questions) {
+            const qPool = [...(q.d || []), ...(q.a || []), ...globalPool];
+            const alList = q.al && q.al.length > 0 ? q.al : [{ id: 1, a: qPool }];
+
+            for (const blank of alList) {
+                let rawOpts = [];
+                if (blank.a && blank.a.length > 0) rawOpts = blank.a;
+                else if (qPool.length > 0) rawOpts = qPool;
+
+                const optIds = [...new Set(rawOpts.map(o => o.id).filter(id => id !== undefined && id !== null))];
+                if (optIds.length === 0) optIds.push(1, 2, 3, 4);
+
+                slots.push({
+                    qId: q.id ?? 1,
+                    blankId: blank.id ?? 1,
+                    optIds,
+                    hasOwnOptions: Boolean(blank.a && blank.a.length > 0),
+                    currentIndex: 0,
+                    bestIndex: 0,
+                    slotLocked: false
+                });
+            }
+        }
+
+        const sharedPool = slots.length > 1 && slots.every(s => !s.hasOwnOptions);
+
+        // Si comparten banco de palabras, inicializamos sin repetir IDs (0, 1, 2...)
+        if (sharedPool) {
+            slots.forEach((s, idx) => {
+                s.currentIndex = idx % s.optIds.length;
+                s.bestIndex = s.currentIndex;
+            });
+        }
+
+        return { slots, sharedPool };
+    }
+
+    // Construye el arreglo "ua" a partir del estado actual de los slots
+    buildUaFromSlots(pt) {
+        if (pt.multiChoicePairMode && pt.pairCandidates && pt.pairCandidates.length > 0) {
+            return pt.pairCandidates[pt.pairIdx % pt.pairCandidates.length];
+        }
+
+        const qMap = new Map();
+        for (const s of pt.slots) {
+            if (!qMap.has(s.qId)) qMap.set(s.qId, []);
+            const chosenId = s.optIds[s.currentIndex] ?? s.optIds[0] ?? 1;
+            qMap.get(s.qId).push([s.blankId, chosenId]);
+        }
+
+        const ua = [];
+        for (const [qId, aId] of qMap.entries()) {
+            ua.push({ qId, aId });
+        }
+        return ua;
+    }
+
     async resolveFullTest(unitId, lessonNodeId, lessonCode, testTasks, lessonSessionId) {
         try {
             const parsedTasks = [];
             let partCounter = 1;
 
-            // 1. Descargamos todas las partes y aplanamos sus espacios en blanco (slots)
             for (const task of testTasks) {
                 const taskCode = task.Metadata?.Code ? task.Metadata.Code : lessonCode;
                 const res = await this.uss.getTestItem(taskCode, task.NodeId, lessonNodeId, partCounter);
@@ -116,52 +291,46 @@ export class BotService {
 
                 const item = res.data.i || res.data.item || res.data;
                 const questions = item.q || item.questions || [];
-                const slots = [];
-                const sharedPool = !(questions[0]?.al?.[0]?.a?.length > 0); // Detecta si usan banco de palabras compartido (Drag & Drop)
+                const { slots, sharedPool } = this.extractSlotsFromItem(questions, item);
 
-                for (const q of questions) {
-                    if (q.al && q.al.length > 0) {
-                        for (const blank of q.al) {
-                            let rawOptions = [];
-                            if (blank.a && blank.a.length > 0) rawOptions.push(...blank.a);
-                            else if (item.d && item.d.length > 0) rawOptions.push(...item.d);
-                            else if (q.d && q.d.length > 0) rawOptions.push(...q.d);
-
-                            const options = rawOptions.map(opt => ({ id: opt.id }));
-
-                            slots.push({
-                                qId: q.id,
-                                blankId: blank.id,
-                                options,
-                                currentIndex: 0,
-                                bestIndex: 0,
-                                lockedSlot: false
-                            });
-                        }
-                    }
+                // Detectamos el iType real: si es Drag & Drop / banco compartido o múltiples espacios suele ser "23", si es opción múltiple simple es "25"
+                const metaType = task.Metadata?.ItemType || task.ItemType || item.iType;
+                let initialType = String(metaType || res.matchedType || "25");
+                if (!metaType && (sharedPool || slots.length > 1 || (item.d && item.d.length > 0))) {
+                    initialType = "23";
                 }
 
-                // Si es un banco compartido (Drag & Drop), iniciamos cada espacio con una palabra distinta (0, 1, 2...)
-                if (sharedPool && slots.length > 1) {
-                    slots.forEach((s, idx) => {
-                        if (s.options.length > 0) {
-                            s.currentIndex = idx % s.options.length;
-                            s.bestIndex = s.currentIndex;
+                // Preparamos candidatos de pares por si una pregunta de 1 slot es Checkbox de "Elige 2 respuestas"
+                const pairCandidates = [];
+                if (slots.length === 1 && slots[0].optIds.length >= 3) {
+                    const s = slots[0];
+                    for (let i = 0; i < s.optIds.length; i++) {
+                        for (let j = i + 1; j < s.optIds.length; j++) {
+                            pairCandidates.push([{
+                                qId: s.qId,
+                                aId: [[s.blankId, s.optIds[i]], [s.blankId, s.optIds[j]]]
+                            }]);
                         }
-                    });
+                    }
                 }
 
                 parsedTasks.push({
                     nodeId: String(task.NodeId),
                     matchedCode: res.matchedCode,
-                    matchedType: String(res.matchedType || "25"),
+                    matchedType: initialType,
+                    altTypes: ["25", "23", "24", "21", "20"].filter(t => t !== initialType),
                     partCounter,
-                    sharedPool,
                     slots,
+                    sharedPool,
                     bestScore: 0,
-                    activeSlotIdx: 0, // Qué espacio estamos rotando actualmente en Hill-Climbing
-                    slotTries: 0,
-                    fullySolved: false
+                    locked: false,
+                    // Variables para resolución fina (Fase 2)
+                    activeSlotIdx: 0,
+                    probeStep: 0,
+                    multiChoicePairMode: false,
+                    pairCandidates,
+                    pairIdx: 0,
+                    odometerStep: 0
                 });
 
                 partCounter++;
@@ -169,34 +338,17 @@ export class BotService {
 
             if (parsedTasks.length === 0) return;
 
-            // 2. BUCLE HILL-CLIMBING HASTA CONSEGUIR 100%
-            const maxAttempts = 60; // Margen amplio para no rendirse en preguntas compuestas
+            const maxSingleOptions = Math.max(...parsedTasks.map(pt => pt.slots[0]?.optIds.length || 4), 4);
+            const maxAttempts = 85;
             let currentMark = 0;
 
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-                const submitAnswer = [];
-
-                for (const pt of parsedTasks) {
-                    // Agrupamos los slots de vuelta por su qId original
-                    const qMap = new Map();
-                    for (const s of pt.slots) {
-                        if (!qMap.has(s.qId)) qMap.set(s.qId, []);
-                        const chosenOpt = s.options[s.currentIndex] || { id: 1 };
-                        qMap.get(s.qId).push([s.blankId, chosenOpt.id]);
-                    }
-
-                    const userAnswersForTask = [];
-                    for (const [qId, aIdArray] of qMap.entries()) {
-                        userAnswersForTask.push({ qId, aId: aIdArray });
-                    }
-
-                    submitAnswer.push({
-                        iId: pt.nodeId,
-                        iCode: pt.matchedCode,
-                        iType: pt.matchedType,
-                        ua: userAnswersForTask
-                    });
-                }
+                const submitAnswer = parsedTasks.map(pt => ({
+                    iId: pt.nodeId,
+                    iCode: pt.matchedCode,
+                    iType: pt.matchedType,
+                    ua: this.buildUaFromSlots(pt)
+                }));
 
                 const safeTimeMs = Math.floor(Math.random() * (31500 - 20000 + 1)) + 20000;
                 const status = await this.uss.SaveUserTestV1(unitId, lessonNodeId, submitAnswer, safeTimeMs);
@@ -209,118 +361,198 @@ export class BotService {
                 currentMark = status.data.finalMark ?? 0;
                 const marksArray = status.data.marks || [];
 
-                // Si ya logramos el 100% global, salimos victoriosos inmediatamente
                 if (currentMark >= 100) {
                     console.log(`    [🎯] Intento ${attempt}: Nota = 100%`);
                     console.log(`    [#] ¡100% CONSEGUIDO PERFECTAMENTE en ${attempt} intentos!`);
                     break;
                 }
 
-                let solvedPartsCount = 0;
+                // Determinamos si el servidor reporta m en escala 0..100 o 0..1
+                const maxObservedM = Math.max(...marksArray.map(m => Number(m.m) || 0), 0);
+                const fullPartThreshold = maxObservedM > 1 ? 99 : 1;
+
+                let lockedCount = 0;
 
                 for (const pt of parsedTasks) {
-                    if (pt.fullySolved || pt.slots.length === 0) {
-                        solvedPartsCount++;
+                    if (pt.locked || pt.slots.length === 0) {
+                        lockedCount++;
                         continue;
                     }
 
                     const markObj = marksArray.find(m => String(m.iId) === pt.nodeId);
                     const score = markObj ? Number(markObj.m) : 0;
 
-                    // CASO A: Pregunta de 1 solo espacio (Opción múltiple normal)
+                    // 1. ¿Esta parte ya alcanzó su puntaje perfecto (100)?
+                    if (score >= fullPartThreshold && score > 0) {
+                        pt.bestScore = score;
+                        pt.slots.forEach(s => { s.bestIndex = s.currentIndex; s.slotLocked = true; });
+                        pt.locked = true;
+                        lockedCount++;
+                        continue;
+                    }
+
+                    // =========================================================================
+                    // CASO A: Pregunta de 1 solo espacio (Opción Múltiple o Checkbox Doble)
+                    // =========================================================================
                     if (pt.slots.length === 1) {
                         const s = pt.slots[0];
-                        if (score > 0) {
+
+                        // Si dio algún punto positivo en pregunta de 1 espacio y no estamos en modo pares, es la correcta
+                        if (score > 0 && !pt.multiChoicePairMode) {
                             pt.bestScore = score;
                             s.bestIndex = s.currentIndex;
-                            pt.fullySolved = true;
-                            solvedPartsCount++;
+                            pt.locked = true;
+                            lockedCount++;
+                            continue;
+                        }
+
+                        if (!pt.multiChoicePairMode) {
+                            if (s.currentIndex + 1 < s.optIds.length) {
+                                s.currentIndex++;
+                            } else {
+                                // Ya probamos todas las opciones individuales y dio 0:
+                                // Probamos cambiar entre iType "25" y "23", o pasamos a modo Checkbox de 2 respuestas
+                                if (pt.altTypes.length > 0 && pt.probeStep === 0) {
+                                    pt.matchedType = pt.altTypes.shift();
+                                    s.currentIndex = 0;
+                                    pt.probeStep = 1;
+                                } else if (pt.pairCandidates.length > 0) {
+                                    pt.multiChoicePairMode = true;
+                                    pt.pairIdx = 0;
+                                } else {
+                                    s.currentIndex = s.bestIndex;
+                                    pt.locked = true;
+                                    lockedCount++;
+                                }
+                            }
                         } else {
-                            if (s.options.length > 0) {
-                                s.currentIndex = (s.currentIndex + 1) % s.options.length;
+                            // Estamos probando pares de Checkboxes (2 respuestas)
+                            if (score > pt.bestScore) {
+                                pt.bestScore = score;
+                                if (score >= fullPartThreshold) {
+                                    pt.locked = true;
+                                    lockedCount++;
+                                    continue;
+                                }
+                            }
+                            if (pt.pairIdx + 1 < pt.pairCandidates.length) {
+                                pt.pairIdx++;
+                            } else {
+                                pt.locked = true;
+                                lockedCount++;
                             }
                         }
-                    } 
-                    // CASO B: Pregunta compuesta (Múltiples espacios / Drag & Drop / Emparejamiento)
+                    }
+                    // =========================================================================
+                    // CASO B: Pregunta de MÚLTIPLES espacios (Drag & Drop / Cloze / Matching)
+                    // =========================================================================
                     else {
                         if (attempt === 1) {
                             pt.bestScore = score;
                             pt.slots.forEach(s => { s.bestIndex = s.currentIndex; });
                         } else {
                             if (score > pt.bestScore) {
-                                // ¡Subió el puntaje de esta parte! Guardamos este estado como la nueva base
+                                // ¡Subió la nota de esta parte! Guardamos la mejora y bloqueamos el slot que probábamos
                                 pt.bestScore = score;
                                 pt.slots.forEach(s => { s.bestIndex = s.currentIndex; });
-                                pt.slots[pt.activeSlotIdx].lockedSlot = true;
-                                pt.activeSlotIdx = (pt.activeSlotIdx + 1) % pt.slots.length;
-                                pt.slotTries = 0;
+                                pt.slots[pt.activeSlotIdx].slotLocked = true;
+                                pt.probeStep = 0;
                             } else if (score < pt.bestScore) {
-                                // Si al mover este espacio el puntaje bajó, significa que el valor anterior ERA EL CORRECTO
+                                // ¡Bajó la nota al mover este slot! Eso demuestra al 100% que el bestIndex anterior era el correcto
                                 pt.slots.forEach(s => { s.currentIndex = s.bestIndex; });
-                                pt.slots[pt.activeSlotIdx].lockedSlot = true;
-                                pt.activeSlotIdx = (pt.activeSlotIdx + 1) % pt.slots.length;
-                                pt.slotTries = 0;
+                                pt.slots[pt.activeSlotIdx].slotLocked = true;
+                                pt.probeStep = 0;
                             }
                         }
 
-                        // Si todos los espacios individuales ya quedaron verificados, damos la parte por resuelta
-                        if (pt.slots.every(s => s.lockedSlot)) {
-                            pt.fullySolved = true;
-                            solvedPartsCount++;
-                            continue;
+                        // Si todos los slots quedaron confirmados pero aún no llega a 100, desbloqueamos los que no subieron nota
+                        if (pt.slots.every(s => s.slotLocked)) {
+                            pt.slots.forEach(s => { s.slotLocked = false; });
+                            // Si estaba en 0 total, probamos alternar el iType ("23" <-> "25")
+                            if (pt.bestScore === 0 && pt.altTypes.length > 0) {
+                                pt.matchedType = pt.altTypes.shift();
+                            }
                         }
 
-                        // Buscamos el siguiente espacio no bloqueado para probar la siguiente opción
-                        while (pt.slots[pt.activeSlotIdx].lockedSlot) {
+                        // Buscamos el primer slot no bloqueado
+                        let safety = 0;
+                        while (pt.slots[pt.activeSlotIdx].slotLocked && safety < pt.slots.length) {
                             pt.activeSlotIdx = (pt.activeSlotIdx + 1) % pt.slots.length;
+                            safety++;
                         }
 
                         const activeSlot = pt.slots[pt.activeSlotIdx];
-                        pt.slotTries++;
+                        pt.probeStep++;
 
-                        // Si dimos toda la vuelta a las opciones de este espacio sin que cambie el puntaje
-                        // (ocurre cuando el servidor evalúa "todo o nada" en un par de espacios), rotamos el siguiente también
-                        if (pt.slotTries >= activeSlot.options.length) {
-                            pt.slotTries = 0;
-                            const nextIdx = (pt.activeSlotIdx + 1) % pt.slots.length;
-                            const nextSlot = pt.slots[nextIdx];
-                            if (nextSlot.options.length > 0) {
-                                nextSlot.currentIndex = (nextSlot.currentIndex + 1) % nextSlot.options.length;
-                                nextSlot.bestIndex = nextSlot.currentIndex;
+                        // Si ya probamos todas las opciones de este slot y la nota sigue clavada en 0
+                        // (significa que el servidor evalúa "Todo o Nada"), avanzamos en modo permutación sin repetición
+                        if (pt.probeStep >= activeSlot.optIds.length) {
+                            pt.probeStep = 0;
+                            if (pt.bestScore > 0) {
+                                // Restauramos el mejor conocido y pasamos al siguiente slot
+                                activeSlot.currentIndex = activeSlot.bestIndex;
+                                pt.activeSlotIdx = (pt.activeSlotIdx + 1) % pt.slots.length;
+                            } else {
+                                // Modo Todo o Nada (bestScore === 0): rotamos el siguiente slot tipo odómetro sin repetir IDs
+                                pt.odometerStep++;
+                                let temp = pt.odometerStep;
+                                const usedIds = new Set();
+                                for (let i = 0; i < pt.slots.length; i++) {
+                                    const s = pt.slots[i];
+                                    const len = s.optIds.length;
+                                    let idx = temp % len;
+                                    temp = Math.floor(temp / len);
+                                    if (pt.sharedPool && len >= pt.slots.length) {
+                                        let guard = 0;
+                                        while (usedIds.has(s.optIds[idx]) && guard < len) {
+                                            idx = (idx + 1) % len;
+                                            guard++;
+                                        }
+                                        usedIds.add(s.optIds[idx]);
+                                    }
+                                    s.currentIndex = idx;
+                                    s.bestIndex = idx;
+                                }
+                                continue;
                             }
                         }
 
-                        if (activeSlot.options.length > 0) {
-                            activeSlot.currentIndex = (activeSlot.currentIndex + 1) % activeSlot.options.length;
+                        // Avanzamos a la siguiente opción en el slot activo
+                        const nextSlot = pt.slots[pt.activeSlotIdx];
+                        nextSlot.currentIndex = (nextSlot.currentIndex + 1) % nextSlot.optIds.length;
 
-                            // Si es Drag & Drop compartido, evitamos elegir un ID que ya esté bloqueado en otro espacio
-                            if (pt.sharedPool) {
-                                const lockedIds = new Set(
-                                    pt.slots.filter((s, idx) => idx !== pt.activeSlotIdx && s.lockedSlot)
-                                            .map(s => s.options[s.bestIndex]?.id)
-                                );
-                                let guard = 0;
-                                while (lockedIds.has(activeSlot.options[activeSlot.currentIndex]?.id) && guard < activeSlot.options.length) {
-                                    activeSlot.currentIndex = (activeSlot.currentIndex + 1) % activeSlot.options.length;
-                                    guard++;
-                                }
+                        // Si es Drag & Drop con banco compartido, evitamos elegir un ID que ya esté bloqueado en otro slot
+                        if (pt.sharedPool) {
+                            const lockedIds = new Set(
+                                pt.slots
+                                    .filter((s, idx) => idx !== pt.activeSlotIdx && s.slotLocked)
+                                    .map(s => s.optIds[s.bestIndex])
+                            );
+                            let guard = 0;
+                            while (lockedIds.has(nextSlot.optIds[nextSlot.currentIndex]) && guard < nextSlot.optIds.length) {
+                                nextSlot.currentIndex = (nextSlot.currentIndex + 1) % nextSlot.optIds.length;
+                                guard++;
                             }
                         }
                     }
                 }
 
-                console.log(`    [🎯] Intento ${attempt}: Nota = ${currentMark}% (${solvedPartsCount}/${parsedTasks.length} partes al 100%)`);
+                // Log detallado: muestra el puntaje individual [m] de cada parte para ver cuál se resiste
+                const detailMarks = parsedTasks.map(pt => {
+                    const mObj = marksArray.find(m => String(m.iId) === pt.nodeId);
+                    return `P${pt.partCounter}:${mObj ? mObj.m : 0}`;
+                }).join(' | ');
 
-                if ( attempt % 4 === 0 ) {
-                    await this.uss.sendPing(lessonSessionId);
+                console.log(`    [🎯] Intento ${attempt}: Nota = ${currentMark}% [${detailMarks}]`);
+
+                if (lockedCount === parsedTasks.length && currentMark < 100) {
+                    console.log(`    [!] Partes agotadas. Nota alcanzada: ${currentMark}%`);
+                    break;
                 }
-                await new Promise(r => setTimeout(r, 600)); // Pausa ágil de 0.6s entre intentos
-            }
 
-            if (currentMark < 100) {
-                console.log(`    [!] Se alcanzó el límite de intentos. Mejor nota obtenida: ${currentMark}%`);
+                if (attempt % 5 === 0) await this.uss.sendPing(lessonSessionId);
+                await new Promise(r => setTimeout(r, 500));
             }
-
         } catch (e) {
             console.log(`    [!] Error en Test:`, e.message);
         }
