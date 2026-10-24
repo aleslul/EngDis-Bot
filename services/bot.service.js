@@ -16,36 +16,38 @@ export class BotService {
             const tree = await this.uss.getCourseTree(course.NodeId, course.ParentNodeId);
             if (!tree.isSuccess) continue;
             
-            const courseId = course.ParentNodeId; // Ej: 44845 (Intermediate 1)
-            const unitId = course.NodeId;         // Ej: 44846 (Unit 1: Education)
+            const courseId = course.ParentNodeId;
+            const unitId = course.NodeId;
 
             for (const unit of tree.data) {
                 const testSection = unit.Children?.find(s => s.Name === "Test");
                 
-                // Normalizamos la nota (a veces viene de 0 a 1, y a veces de 0 a 100)
+                // Normalizamos la nota para detectar exactamente si ya tiene 100%
                 const rawGrade = testSection?.Grade ?? unit.Grade ?? null;
-                const numericGrade = rawGrade !== null ? (rawGrade <= 1 && rawGrade > 0 ? rawGrade * 100 : Number(rawGrade)) : null;
+                const numericGrade = rawGrade !== null && rawGrade !== undefined
+                    ? (rawGrade <= 1 && rawGrade > 0 ? Math.round(rawGrade * 100) : Math.round(Number(rawGrade)))
+                    : null;
                 
-                // Si no tiene nota, o si la nota es menor a 80%, entramos a resolverlo de nuevo
-                const testNeedsWork = testSection && (numericGrade === null || numericGrade < 80);
-
-                if (!timeInjectionOnly && !testNeedsWork && (unit.IsDone || unit.Progress === 1.0 || unit.Progress === 100)) {
-                    console.log(`\n[✔] Lección: ${unit.Name} -> COMPLETADA CON NOTA (${numericGrade}%) (Saltando...)`);
+                // Si la lección no tiene Test (ej. Math Test), basta con que esté IsDone
+                if (!testSection && !timeInjectionOnly && (unit.IsDone || unit.Progress === 1.0 || unit.Progress === 100)) {
+                    console.log(`\n[✔] Lección (Sin Test): ${unit.Name} -> COMPLETADA (Saltando...)`);
                     continue;
                 }
 
-                console.log(`\n[*] Lección: ${unit.Name} (ID: ${unit.NodeId})`);
-                const lessonCode = unit["Metadata"] ? unit["Metadata"]["Code"] : null;
-                let contextText = "";
-                
-                if (lessonCode && !timeInjectionOnly) {
-                    contextText = await ScraperUtil.getContext(lessonCode);
-                    if (contextText) console.log(`    [#] Contexto extraído con éxito.`);
+                // OMITIR SI YA TIENE 100%: Solo trabajamos si no tiene nota o si es menor a 100%
+                const testNeeds100 = testSection && (numericGrade === null || numericGrade < 100);
+
+                if (!timeInjectionOnly && !testNeeds100 && (unit.IsDone || unit.Progress === 1.0 || unit.Progress === 100)) {
+                    console.log(`\n[✔] Lección: ${unit.Name} -> YA TIENE 100% (Saltando...)`);
+                    continue;
                 }
+
+                console.log(`\n[*] Lección: ${unit.Name} (ID: ${unit.NodeId}) | Nota actual: ${numericGrade ?? "Sin nota"}%`);
+                const lessonCode = unit["Metadata"] ? unit["Metadata"]["Code"] : null;
                 
                 for (const section of unit.Children) {
                     const isTest = section.Name === "Test";
-                    const needsTestRepair = isTest && testNeedsWork;
+                    const needsTestRepair = isTest && testNeeds100;
 
                     if (!timeInjectionOnly && !needsTestRepair && (section.IsDone || section.Progress === 1.0 || section.Progress === 100)) {
                         console.log(`  [✔] ${section.Name} -> Listo`);
@@ -74,20 +76,18 @@ export class BotService {
                                 await new Promise(r => setTimeout(r, 1000));
                             }
                         } else {
-                            console.log(`  [!] Iniciando Oráculo para el Test completo...`);
+                            console.log(`  [!] Buscando el 100% en el Test...`);
                             if (!lessonCode) continue;
 
                             const testTasks = section.Children && section.Children.length > 0 
                                 ? section.Children 
                                 : [{ NodeId: section.NodeId, Metadata: { Code: lessonCode } }];
 
-                            // Resolvemos TODAS las partes del Test y las enviamos en UN SOLO POST
                             await this.resolveFullTest(
-                                unitId,         // 44846 (ID de la Unidad Padre)
-                                unit.NodeId,    // 38 (ID de la Lección)
-                                lessonCode,     // Ej: "i1rack"
-                                testTasks,      // Array con las tareas [23875, 23876, ...]
-                                contextText, 
+                                unitId,
+                                unit.NodeId,
+                                lessonCode,
+                                testTasks,
                                 lessonSessionId
                             );
                         }
@@ -98,14 +98,12 @@ export class BotService {
         }
     }
 
-    async resolveFullTest(unitId, lessonNodeId, lessonCode, testTasks, contextText, lessonSessionId) {
+    async resolveFullTest(unitId, lessonNodeId, lessonCode, testTasks, lessonSessionId) {
         try {
             const parsedTasks = [];
-            const batchForAi = [];
             let partCounter = 1;
-            let batchKeyCounter = 0;
 
-            // 1. Descargamos todas las preguntas del Test rápidamente
+            // 1. Descargamos todas las partes y aplanamos sus espacios en blanco (slots)
             for (const task of testTasks) {
                 const taskCode = task.Metadata?.Code ? task.Metadata.Code : lessonCode;
                 const res = await this.uss.getTestItem(taskCode, task.NodeId, lessonNodeId, partCounter);
@@ -118,13 +116,10 @@ export class BotService {
 
                 const item = res.data.i || res.data.item || res.data;
                 const questions = item.q || item.questions || [];
-                const taskQuestionsMeta = [];
+                const slots = [];
+                const sharedPool = !(questions[0]?.al?.[0]?.a?.length > 0); // Detecta si usan banco de palabras compartido (Drag & Drop)
 
                 for (const q of questions) {
-                    const rawQuestion = q.qt || (typeof q.t === 'string' ? q.t : null) || q.d || "Complete the blank correctly.";
-                    const preguntaTexto = rawQuestion.toString().replace(/<[^>]*>?/gm, '').trim();
-                    const blanksMeta = [];
-
                     if (q.al && q.al.length > 0) {
                         for (const blank of q.al) {
                             let rawOptions = [];
@@ -132,23 +127,28 @@ export class BotService {
                             else if (item.d && item.d.length > 0) rawOptions.push(...item.d);
                             else if (q.d && q.d.length > 0) rawOptions.push(...q.d);
 
-                            const options = rawOptions.map(opt => ({
-                                id: opt.id,
-                                text: (opt.txt || opt.t || "").toString().replace(/<[^>]*>?/gm, '').trim()
-                            }));
+                            const options = rawOptions.map(opt => ({ id: opt.id }));
 
-                            const key = String(batchKeyCounter++);
-                            batchForAi.push({
-                                key,
-                                part: partCounter,
-                                question: preguntaTexto,
-                                options
+                            slots.push({
+                                qId: q.id,
+                                blankId: blank.id,
+                                options,
+                                currentIndex: 0,
+                                bestIndex: 0,
+                                lockedSlot: false
                             });
-
-                            blanksMeta.push({ blankId: blank.id, key, options });
                         }
                     }
-                    taskQuestionsMeta.push({ qId: q.id, blanksMeta });
+                }
+
+                // Si es un banco compartido (Drag & Drop), iniciamos cada espacio con una palabra distinta (0, 1, 2...)
+                if (sharedPool && slots.length > 1) {
+                    slots.forEach((s, idx) => {
+                        if (s.options.length > 0) {
+                            s.currentIndex = idx % s.options.length;
+                            s.bestIndex = s.currentIndex;
+                        }
+                    });
                 }
 
                 parsedTasks.push({
@@ -156,59 +156,171 @@ export class BotService {
                     matchedCode: res.matchedCode,
                     matchedType: String(res.matchedType || "25"),
                     partCounter,
-                    taskQuestionsMeta
+                    sharedPool,
+                    slots,
+                    bestScore: 0,
+                    activeSlotIdx: 0, // Qué espacio estamos rotando actualmente en Hill-Climbing
+                    slotTries: 0,
+                    fullySolved: false
                 });
 
                 partCounter++;
             }
 
-            if (parsedTasks.length === 0) {
-                console.log(`    [!] No se generaron preguntas para enviar en este Test.`);
-                return;
-            }
+            if (parsedTasks.length === 0) return;
 
-            // 2. UNA SOLA LLAMADA A GEMINI PARA TODO EL TEST
-            console.log(`    [⚡] Consultando ${batchForAi.length} respuestas al Oráculo en un solo lote...`);
-            const aiAnswersMap = await this.ai.getBatchAnswers(batchForAi, contextText);
+            // 2. BUCLE HILL-CLIMBING HASTA CONSEGUIR 100%
+            const maxAttempts = 60; // Margen amplio para no rendirse en preguntas compuestas
+            let currentMark = 0;
 
-            // 3. Empaquetamos las respuestas
-            const submitAnswer = [];
-            for (const pt of parsedTasks) {
-                const userAnswersForTask = [];
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                const submitAnswer = [];
 
-                for (const qMeta of pt.taskQuestionsMeta) {
-                    const aIdArray = [];
-                    for (const bMeta of qMeta.blanksMeta) {
-                        const rawAiChoice = aiAnswersMap[bMeta.key];
-                        const finalAnswerId = ScraperUtil.parseAnswerId(String(rawAiChoice ?? ""), bMeta.options);
-                        aIdArray.push([bMeta.blankId, finalAnswerId]);
+                for (const pt of parsedTasks) {
+                    // Agrupamos los slots de vuelta por su qId original
+                    const qMap = new Map();
+                    for (const s of pt.slots) {
+                        if (!qMap.has(s.qId)) qMap.set(s.qId, []);
+                        const chosenOpt = s.options[s.currentIndex] || { id: 1 };
+                        qMap.get(s.qId).push([s.blankId, chosenOpt.id]);
                     }
-                    userAnswersForTask.push({
-                        qId: qMeta.qId,
-                        aId: aIdArray
+
+                    const userAnswersForTask = [];
+                    for (const [qId, aIdArray] of qMap.entries()) {
+                        userAnswersForTask.push({ qId, aId: aIdArray });
+                    }
+
+                    submitAnswer.push({
+                        iId: pt.nodeId,
+                        iCode: pt.matchedCode,
+                        iType: pt.matchedType,
+                        ua: userAnswersForTask
                     });
-                    console.log(`      [-] Parte ${pt.partCounter} (ID: ${pt.nodeId}) -> Respuestas: ${JSON.stringify(aIdArray)}`);
                 }
 
-                submitAnswer.push({
-                    iId: pt.nodeId,
-                    iCode: pt.matchedCode,
-                    iType: pt.matchedType,
-                    ua: userAnswersForTask
-                });
+                const safeTimeMs = Math.floor(Math.random() * (31500 - 20000 + 1)) + 20000;
+                const status = await this.uss.SaveUserTestV1(unitId, lessonNodeId, submitAnswer, safeTimeMs);
+
+                if (!status.isSuccess || !status.data) {
+                    console.log(`    [!] Error en intento ${attempt}: ${status.error}`);
+                    break;
+                }
+
+                currentMark = status.data.finalMark ?? 0;
+                const marksArray = status.data.marks || [];
+
+                // Si ya logramos el 100% global, salimos victoriosos inmediatamente
+                if (currentMark >= 100) {
+                    console.log(`    [🎯] Intento ${attempt}: Nota = 100%`);
+                    console.log(`    [#] ¡100% CONSEGUIDO PERFECTAMENTE en ${attempt} intentos!`);
+                    break;
+                }
+
+                let solvedPartsCount = 0;
+
+                for (const pt of parsedTasks) {
+                    if (pt.fullySolved || pt.slots.length === 0) {
+                        solvedPartsCount++;
+                        continue;
+                    }
+
+                    const markObj = marksArray.find(m => String(m.iId) === pt.nodeId);
+                    const score = markObj ? Number(markObj.m) : 0;
+
+                    // CASO A: Pregunta de 1 solo espacio (Opción múltiple normal)
+                    if (pt.slots.length === 1) {
+                        const s = pt.slots[0];
+                        if (score > 0) {
+                            pt.bestScore = score;
+                            s.bestIndex = s.currentIndex;
+                            pt.fullySolved = true;
+                            solvedPartsCount++;
+                        } else {
+                            if (s.options.length > 0) {
+                                s.currentIndex = (s.currentIndex + 1) % s.options.length;
+                            }
+                        }
+                    } 
+                    // CASO B: Pregunta compuesta (Múltiples espacios / Drag & Drop / Emparejamiento)
+                    else {
+                        if (attempt === 1) {
+                            pt.bestScore = score;
+                            pt.slots.forEach(s => { s.bestIndex = s.currentIndex; });
+                        } else {
+                            if (score > pt.bestScore) {
+                                // ¡Subió el puntaje de esta parte! Guardamos este estado como la nueva base
+                                pt.bestScore = score;
+                                pt.slots.forEach(s => { s.bestIndex = s.currentIndex; });
+                                pt.slots[pt.activeSlotIdx].lockedSlot = true;
+                                pt.activeSlotIdx = (pt.activeSlotIdx + 1) % pt.slots.length;
+                                pt.slotTries = 0;
+                            } else if (score < pt.bestScore) {
+                                // Si al mover este espacio el puntaje bajó, significa que el valor anterior ERA EL CORRECTO
+                                pt.slots.forEach(s => { s.currentIndex = s.bestIndex; });
+                                pt.slots[pt.activeSlotIdx].lockedSlot = true;
+                                pt.activeSlotIdx = (pt.activeSlotIdx + 1) % pt.slots.length;
+                                pt.slotTries = 0;
+                            }
+                        }
+
+                        // Si todos los espacios individuales ya quedaron verificados, damos la parte por resuelta
+                        if (pt.slots.every(s => s.lockedSlot)) {
+                            pt.fullySolved = true;
+                            solvedPartsCount++;
+                            continue;
+                        }
+
+                        // Buscamos el siguiente espacio no bloqueado para probar la siguiente opción
+                        while (pt.slots[pt.activeSlotIdx].lockedSlot) {
+                            pt.activeSlotIdx = (pt.activeSlotIdx + 1) % pt.slots.length;
+                        }
+
+                        const activeSlot = pt.slots[pt.activeSlotIdx];
+                        pt.slotTries++;
+
+                        // Si dimos toda la vuelta a las opciones de este espacio sin que cambie el puntaje
+                        // (ocurre cuando el servidor evalúa "todo o nada" en un par de espacios), rotamos el siguiente también
+                        if (pt.slotTries >= activeSlot.options.length) {
+                            pt.slotTries = 0;
+                            const nextIdx = (pt.activeSlotIdx + 1) % pt.slots.length;
+                            const nextSlot = pt.slots[nextIdx];
+                            if (nextSlot.options.length > 0) {
+                                nextSlot.currentIndex = (nextSlot.currentIndex + 1) % nextSlot.options.length;
+                                nextSlot.bestIndex = nextSlot.currentIndex;
+                            }
+                        }
+
+                        if (activeSlot.options.length > 0) {
+                            activeSlot.currentIndex = (activeSlot.currentIndex + 1) % activeSlot.options.length;
+
+                            // Si es Drag & Drop compartido, evitamos elegir un ID que ya esté bloqueado en otro espacio
+                            if (pt.sharedPool) {
+                                const lockedIds = new Set(
+                                    pt.slots.filter((s, idx) => idx !== pt.activeSlotIdx && s.lockedSlot)
+                                            .map(s => s.options[s.bestIndex]?.id)
+                                );
+                                let guard = 0;
+                                while (lockedIds.has(activeSlot.options[activeSlot.currentIndex]?.id) && guard < activeSlot.options.length) {
+                                    activeSlot.currentIndex = (activeSlot.currentIndex + 1) % activeSlot.options.length;
+                                    guard++;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                console.log(`    [🎯] Intento ${attempt}: Nota = ${currentMark}% (${solvedPartsCount}/${parsedTasks.length} partes al 100%)`);
+
+                if ( attempt % 4 === 0 ) {
+                    await this.uss.sendPing(lessonSessionId);
+                }
+                await new Promise(r => setTimeout(r, 600)); // Pausa ágil de 0.6s entre intentos
             }
 
-            await this.uss.sendPing(lessonSessionId);
-
-            // 4. Enviamos un tiempo seguro para Int16 (entre 24,000 y 31,500 ms)
-            const safeTimeMs = Math.floor(Math.random() * (31500 - 24000 + 1)) + 24000;
-            const status = await this.uss.SaveUserTestV1(unitId, lessonNodeId, submitAnswer, safeTimeMs);
-            
-            if (status.isSuccess && status.data?.finalMark !== undefined) {
-                console.log(`    [#] Test Guardado Oficialmente -> Nota Final (Last Test Score): ${status.data.finalMark}%`);
-            } else {
-                console.log(`    [!] Respuesta inesperada al guardar Test: ${status.error || JSON.stringify(status.data)}`);
+            if (currentMark < 100) {
+                console.log(`    [!] Se alcanzó el límite de intentos. Mejor nota obtenida: ${currentMark}%`);
             }
+
         } catch (e) {
             console.log(`    [!] Error en Test:`, e.message);
         }
